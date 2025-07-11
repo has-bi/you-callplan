@@ -1,4 +1,4 @@
-// ==================== UTILIZATION MANAGER ====================
+// ==================== ENHANCED UTILIZATION MANAGER ====================
 class UtilizationManager {
   constructor(sheet) {
     this.sheet = sheet;
@@ -172,7 +172,7 @@ class UtilizationManager {
     return frequencies;
   }
 
-  // NEW: Calculate expected visits for all priorities
+  // Calculate expected visits for all priorities
   calculateExpectedVisits(stores) {
     const expectedByPriority = {};
     const actualByPriority = {};

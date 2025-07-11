@@ -101,13 +101,13 @@ class DateCalculator {
     });
   }
 
-  // NEW: Calculate total working days in current month
+  // Calculate total working days in current month
   getTotalWorkingDays() {
     const workingDays = this.getMonthlyWorkingDays();
     return workingDays.reduce((total, week) => total + week.length, 0);
   }
 
-  // NEW: Get current month info for fractional calculations
+  // Get current month info for fractional calculations
   getMonthInfo() {
     const workingDays = this.getMonthlyWorkingDays();
     const totalWorkingDays = this.getTotalWorkingDays();

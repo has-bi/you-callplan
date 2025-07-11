@@ -1,4 +1,4 @@
-// ==================== STORE MANAGER ====================
+// ==================== ENHANCED STORE MANAGER ====================
 class StoreManager {
   constructor(sheet) {
     this.sheet = sheet;
@@ -115,6 +115,11 @@ class StoreManager {
             // Additional info for reporting
             storeIndex: storeIndex,
             lastVisitCalculation: `${config.requiredVisits} freq → ${actualVisits} visits`,
+            isFractionalVisit: config.requiredVisits < 1 && actualVisits > 0,
+
+            // NEW: Mall clustering placeholders (will be populated by RouteOptimizer)
+            mallClusterId: null,
+            mallClusterInfo: null,
           };
 
           // Only add stores that will be visited this month
@@ -151,7 +156,7 @@ class StoreManager {
     return stores;
   }
 
-  // NEW: Get store statistics for reporting
+  // Get store statistics for reporting
   getStoreStatistics(includePriorities) {
     const stats = {
       byPriority: {},
@@ -224,7 +229,7 @@ class StoreManager {
     return stats;
   }
 
-  // NEW: Preview fractional visit distribution for testing
+  // Preview fractional visit distribution for testing
   previewFractionalDistribution(priority, sampleSize = 20) {
     const frequency = CONFIG.PRIORITIES[priority]?.requiredVisits || 0;
     if (frequency >= 1 || frequency < CONFIG.FRACTIONAL_VISITS.MIN_FREQUENCY) {
@@ -257,6 +262,71 @@ class StoreManager {
       distribution: preview,
       accuracy:
         Math.abs(visitCount - expectedCount) <= 1 ? "Good" : "Needs adjustment",
+    };
+  }
+
+  // NEW: Test mall detection on loaded stores
+  testMallDetection(includePriorities) {
+    const stores = this.loadStores(includePriorities);
+
+    if (stores.length < 2) {
+      return {
+        success: false,
+        message: "Need at least 2 stores to test mall detection",
+        stores: stores.length,
+      };
+    }
+
+    // Simple proximity test
+    const mallCandidates = [];
+    const processed = new Set();
+
+    stores.forEach((store, index) => {
+      if (processed.has(index)) return;
+
+      const nearbyStores = [store];
+      processed.add(index);
+
+      stores.forEach((otherStore, otherIndex) => {
+        if (processed.has(otherIndex)) return;
+
+        const distance = Utils.distance(
+          store.lat,
+          store.lng,
+          otherStore.lat,
+          otherStore.lng
+        );
+
+        if (distance <= CONFIG.CLUSTERING.MALL_DETECTION.PROXIMITY_THRESHOLD) {
+          nearbyStores.push(otherStore);
+          processed.add(otherIndex);
+        }
+      });
+
+      if (nearbyStores.length > 1) {
+        mallCandidates.push({
+          stores: nearbyStores,
+          storeCount: nearbyStores.length,
+          priorities: [...new Set(nearbyStores.map((s) => s.priority))],
+          retailers: [...new Set(nearbyStores.map((s) => s.retailer))],
+        });
+      }
+    });
+
+    return {
+      success: true,
+      totalStores: stores.length,
+      mallCandidates: mallCandidates.length,
+      storesInMalls: mallCandidates.reduce(
+        (sum, candidate) => sum + candidate.storeCount,
+        0
+      ),
+      details: mallCandidates.slice(0, 5), // First 5 for preview
+      settings: {
+        proximityThreshold:
+          CONFIG.CLUSTERING.MALL_DETECTION.PROXIMITY_THRESHOLD,
+        maxStoresPerMall: CONFIG.CLUSTERING.MALL_DETECTION.MAX_STORES_PER_MALL,
+      },
     };
   }
 }
