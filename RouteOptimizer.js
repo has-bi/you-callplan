@@ -1,39 +1,97 @@
-// ==================== TWO-PHASE ROUTE OPTIMIZER ====================
+// ==================== PRODUCTION ROUTE OPTIMIZER - CVRP WITH PHASE 2 ====================
 class RouteOptimizer {
   constructor() {
     this.dateCalculator = new DateCalculator();
     this.workingDays = this.dateCalculator.getMonthlyWorkingDays();
-    this.flatDays = [];
-    this.initializeFlatDays();
+    this.vehicles = [];
+    this.depot = { lat: CONFIG.START.LAT, lng: CONFIG.START.LNG };
+    this.originalStores = [];
+    this.allVisitInstances = [];
+    this.initializeVehicles();
   }
 
-  // Initialize flat day structure
-  initializeFlatDays() {
-    this.flatDays = [];
+  // ==================== INITIALIZATION ====================
+
+  initializeVehicles() {
+    this.vehicles = [];
+    let vehicleId = 0;
+
     this.workingDays.forEach((week, weekIdx) => {
       week.forEach((dayInfo, dayIdx) => {
-        this.flatDays.push({
-          ...dayInfo,
+        const workStart = CONFIG.WORK.START; // 540 min (9:00 AM)
+        const workEnd = CONFIG.WORK.END; // 1100 min (6:20 PM)
+        const isFriday = dayInfo.isFriday;
+
+        const breakStart = isFriday
+          ? CONFIG.FRIDAY_PRAYER.START
+          : CONFIG.LUNCH.START;
+        const breakEnd = isFriday ? CONFIG.FRIDAY_PRAYER.END : CONFIG.LUNCH.END;
+        const breakDuration = breakEnd - breakStart;
+        const netWorkTime = workEnd - workStart - breakDuration;
+
+        this.vehicles.push({
+          id: vehicleId++,
           weekIndex: weekIdx,
           dayIndex: dayIdx,
-          globalDayIndex: this.flatDays.length,
-          stores: [],
-          targetCapacity: CONFIG.CLUSTERING.TARGET_STORES_PER_DAY,
-          maxCapacity: CONFIG.CLUSTERING.MAX_STORES_PER_DAY,
+          dayInfo: dayInfo,
+
+          // Capacity constraints
+          capacity: CONFIG.CLUSTERING.MAX_STORES_PER_DAY,
+          currentLoad: 0,
+          route: [],
+
+          // Time constraints
+          workStart,
+          workEnd,
+          breakStart,
+          breakEnd,
+          breakDuration,
+          netWorkTime,
+          isFriday,
+          currentTime: workStart,
+          timeBuffer: 5, // 10 min safety margin
+
+          // Tracking
+          totalDistance: 0,
+          districts: new Set(),
+          estimatedFinishTime: workStart,
+          timeCompliant: true,
         });
       });
     });
 
     Utils.log(
-      `Initialized ${this.flatDays.length} working days for two-phase optimization`,
+      `Initialized ${this.vehicles.length} vehicles with CVRP constraints`,
       "INFO"
     );
   }
 
-  // STEP 1: Create visit instances (unchanged)
+  // ==================== VISIT INSTANCE CREATION ====================
+
   createVisitInstances(stores) {
     const instances = [];
+
     stores.forEach((store) => {
+      const distanceFromDepot = Utils.distance(
+        this.depot.lat,
+        this.depot.lng,
+        store.lat,
+        store.lng
+      );
+
+      // Apply 40km distance limit
+      if (
+        distanceFromDepot > (CONFIG.TRAVEL_LIMITS?.MAX_DISTANCE_FROM_HOME || 40)
+      ) {
+        Utils.log(
+          `❌ Skipping ${store.name}: ${distanceFromDepot.toFixed(
+            1
+          )}km > 40km limit`,
+          "WARN"
+        );
+        return;
+      }
+
       if (store.actualVisits > 0) {
         for (let v = 0; v < store.actualVisits; v++) {
           instances.push({
@@ -42,710 +100,762 @@ class RouteOptimizer {
             visitId: `${store.name}_${v + 1}`,
             storeId: store.name,
             isMultiVisit: store.actualVisits > 1,
+            distanceFromDepot: distanceFromDepot,
+            demand: 1,
+            serviceTime: store.visitTime || CONFIG.DEFAULT_VISIT_TIME,
           });
         }
       }
     });
 
     Utils.log(
-      `Created ${instances.length} visit instances from ${stores.length} stores`,
+      `Created ${instances.length} visit instances (30km filtered)`,
       "INFO"
     );
     return instances;
   }
 
-  // STEP 2: Detect mall clusters (unchanged)
-  detectMallClusters(stores) {
-    if (!CONFIG.CLUSTERING.MALL_DETECTION.ENABLE_MALL_CLUSTERING) {
-      return stores.map((store) => ({ ...store, mallClusterId: null }));
-    }
+  // ==================== CVRP SOLVER ====================
 
-    const mallClusters = [];
-    const processed = new Set();
-    let clusterId = 0;
+  solveCVRP(visitInstances) {
+    Utils.log("=== SOLVING CVRP WITH ALL CONSTRAINTS ===", "INFO");
 
-    stores.forEach((store, index) => {
-      if (processed.has(index)) return;
+    // Step 1: Handle multi-visit stores first (strictest constraints)
+    this.assignMultiVisitStores(visitInstances);
 
-      const cluster = [{ store, index }];
-      processed.add(index);
+    // Step 2: Apply savings algorithm to remaining single-visit stores
+    this.assignSingleVisitStores(visitInstances);
 
-      stores.forEach((otherStore, otherIndex) => {
-        if (processed.has(otherIndex)) return;
-
-        const distance = Utils.distance(
-          store.lat,
-          store.lng,
-          otherStore.lat,
-          otherStore.lng
-        );
-        if (distance <= CONFIG.CLUSTERING.MALL_DETECTION.PROXIMITY_THRESHOLD) {
-          cluster.push({ store: otherStore, index: otherIndex });
-          processed.add(otherIndex);
-        }
-      });
-
-      if (
-        cluster.length > 1 &&
-        cluster.length <= CONFIG.CLUSTERING.MALL_DETECTION.MAX_STORES_PER_MALL
-      ) {
-        mallClusters.push({
-          id: `MALL_${clusterId++}`,
-          stores: cluster,
-          centerLat:
-            cluster.reduce((sum, item) => sum + item.store.lat, 0) /
-            cluster.length,
-          centerLng:
-            cluster.reduce((sum, item) => sum + item.store.lng, 0) /
-            cluster.length,
-          storeCount: cluster.length,
-        });
-      }
-    });
-
-    const storesWithMalls = stores.map((store) => ({
-      ...store,
-      mallClusterId: null,
-    }));
-
-    mallClusters.forEach((mallCluster) => {
-      mallCluster.stores.forEach(({ index }) => {
-        storesWithMalls[index].mallClusterId = mallCluster.id;
-        storesWithMalls[index].mallClusterInfo = {
-          storeCount: mallCluster.storeCount,
-          centerLat: mallCluster.centerLat,
-          centerLng: mallCluster.centerLng,
-        };
-      });
-    });
-
-    Utils.log(
-      `Detected ${mallClusters.length} mall clusters from ${stores.length} stores`,
-      "INFO"
-    );
-    return storesWithMalls;
+    // Step 3: Final optimization and validation
+    this.finalOptimization();
   }
 
-  // ==================== PHASE 1: AGGRESSIVE GEOGRAPHIC ASSIGNMENT ====================
+  // ==================== MULTI-VISIT ASSIGNMENT ====================
 
-  phase1_AggressiveAssignment(allVisitInstances) {
-    Utils.log("=== PHASE 1: AGGRESSIVE GEOGRAPHIC ASSIGNMENT ===", "INFO");
+  assignMultiVisitStores(allInstances) {
+    Utils.log("=== ASSIGNING MULTI-VISIT STORES ===", "INFO");
 
-    // Add mall clustering to all stores
-    const storesWithMalls = this.detectMallClusters(allVisitInstances);
-
-    // Create store pool for assignment
-    const storePool = [...storesWithMalls];
-    let totalAssigned = 0;
-
-    // Fill each day to TARGET capacity (ignore constraints for now)
-    this.flatDays.forEach((day, dayIndex) => {
-      Utils.log(
-        `Phase 1 - Filling Day ${dayIndex + 1} (${day.dayName})`,
-        "INFO"
-      );
-
-      const targetStores = CONFIG.CLUSTERING.TARGET_STORES_PER_DAY;
-      const assignedStores = this.aggressivelyFillDay(
-        day,
-        storePool,
-        targetStores
-      );
-
-      // Remove assigned stores from pool
-      assignedStores.forEach((store) => {
-        const poolIndex = storePool.findIndex(
-          (s) => (s.visitId || s.name) === (store.visitId || store.name)
-        );
-        if (poolIndex > -1) {
-          storePool.splice(poolIndex, 1);
-          totalAssigned++;
-        }
+    // Group multi-visit stores by store ID
+    const storeGroups = {};
+    allInstances
+      .filter((s) => s.isMultiVisit)
+      .forEach((store) => {
+        const storeId = store.storeId || store.name;
+        if (!storeGroups[storeId]) storeGroups[storeId] = [];
+        storeGroups[storeId].push(store);
       });
 
-      Utils.log(
-        `Day ${dayIndex + 1}: Assigned ${
-          assignedStores.length
-        } stores. Pool remaining: ${storePool.length}`,
-        "INFO"
-      );
+    Object.entries(storeGroups).forEach(([storeId, visits]) => {
+      this.assignMultiVisitGroup(storeId, visits);
     });
-
-    // If stores remain, distribute them across days with capacity
-    if (storePool.length > 0) {
-      Utils.log(
-        `Phase 1 - Distributing remaining ${storePool.length} stores`,
-        "INFO"
-      );
-      this.distributeRemainingStores(storePool);
-    }
-
-    Utils.log(`Phase 1 completed: ${totalAssigned} stores assigned`, "INFO");
-    return storePool; // Return unassigned stores
   }
 
-  // NEW: Aggressively fill a single day
-  aggressivelyFillDay(day, storePool, targetStores) {
-    if (storePool.length === 0) return [];
+  assignMultiVisitGroup(storeId, visits) {
+    if (visits.length === 1) {
+      this.assignSingleStore(visits[0]);
+    } else if (visits.length === 2) {
+      this.assignTwoVisitStore(storeId, visits);
+    } else {
+      this.assignMultipleVisitStore(storeId, visits);
+    }
+  }
 
-    const assignedStores = [];
-    const dayCenter = { lat: CONFIG.START.LAT, lng: CONFIG.START.LNG }; // Start from office
+  assignTwoVisitStore(storeId, visits) {
+    const [visit1, visit2] = visits.sort((a, b) => a.visitNum - b.visitNum);
+    const validPairs = [];
 
-    // Find stores for this day using expanding radius search
-    let searchRadius = 10; // Start with 10km
-    const maxRadius = 100; // Expand up to 100km if needed
+    // Find vehicle pairs with 14+ day gap
+    for (let i = 0; i < this.vehicles.length; i++) {
+      for (let j = i + 14; j < this.vehicles.length; j++) {
+        const vehicle1 = this.vehicles[i];
+        const vehicle2 = this.vehicles[j];
 
-    while (
-      assignedStores.length < targetStores &&
-      storePool.length > 0 &&
-      searchRadius <= maxRadius
-    ) {
-      // Find all stores within current radius
-      const candidateStores = storePool.filter((store) => {
-        const distance = Utils.distance(
-          dayCenter.lat,
-          dayCenter.lng,
-          store.lat,
-          store.lng
-        );
-        return distance <= searchRadius;
-      });
-
-      if (candidateStores.length === 0) {
-        searchRadius += 10; // Expand search radius by 10km
-        Utils.log(
-          `Day ${
-            day.globalDayIndex + 1
-          }: Expanding search radius to ${searchRadius}km`,
-          "INFO"
-        );
-        continue;
-      }
-
-      // Score and sort candidates by distance + mall bonus
-      const scoredCandidates = candidateStores.map((store) => {
-        const distance = Utils.distance(
-          dayCenter.lat,
-          dayCenter.lng,
-          store.lat,
-          store.lng
-        );
-        let score = 1000 - distance; // Closer = higher score
-
-        // Mall bonus - prioritize completing mall clusters
-        if (store.mallClusterId) {
-          const existingMallStores = assignedStores.filter(
-            (s) => s.mallClusterId === store.mallClusterId
+        if (
+          this.canAssignStore(vehicle1, visit1) &&
+          this.canAssignStore(vehicle2, visit2)
+        ) {
+          const score = this.calculatePairScore(
+            vehicle1,
+            vehicle2,
+            visit1,
+            visit2
           );
-          if (existingMallStores.length > 0) {
-            score += 500; // High bonus for completing mall clusters
-          }
+          validPairs.push({ vehicle1, vehicle2, score, gap: j - i });
         }
-
-        return { store, score, distance };
-      });
-
-      // Sort by score (highest first)
-      scoredCandidates.sort((a, b) => b.score - a.score);
-
-      // Take the best store(s) up to target
-      const storesToTake = Math.min(
-        targetStores - assignedStores.length,
-        scoredCandidates.length
-      );
-
-      for (let i = 0; i < storesToTake; i++) {
-        const selectedStore = scoredCandidates[i].store;
-        assignedStores.push(selectedStore);
-
-        // Update day center to be centroid of assigned stores
-        if (assignedStores.length > 0) {
-          dayCenter.lat =
-            assignedStores.reduce((sum, s) => sum + s.lat, 0) /
-            assignedStores.length;
-          dayCenter.lng =
-            assignedStores.reduce((sum, s) => sum + s.lng, 0) /
-            assignedStores.length;
-        }
-      }
-
-      // If we couldn't find enough stores in this radius, expand
-      if (assignedStores.length < targetStores && candidateStores.length < 5) {
-        searchRadius += 15;
       }
     }
 
-    // Assign stores to day
-    day.stores = [...assignedStores];
-
-    Utils.log(
-      `Aggressively filled day with ${assignedStores.length} stores (target: ${targetStores}, max radius used: ${searchRadius}km)`,
-      "INFO"
-    );
-    return assignedStores;
+    if (validPairs.length > 0) {
+      const bestPair = validPairs.sort((a, b) => b.score - a.score)[0];
+      this.assignStoreToVehicle(bestPair.vehicle1, visit1);
+      this.assignStoreToVehicle(bestPair.vehicle2, visit2);
+      Utils.log(
+        `✅ ${storeId}: Vehicle ${bestPair.vehicle1.id} & ${bestPair.vehicle2.id} (${bestPair.gap}-day gap)`,
+        "INFO"
+      );
+    } else {
+      Utils.log(`❌ ${storeId}: No valid vehicle pairs found`, "ERROR");
+      this.assignSingleStore(visit1);
+      this.assignSingleStore(visit2);
+    }
   }
 
-  // NEW: Distribute remaining stores to days with capacity
-  distributeRemainingStores(remainingStores) {
-    remainingStores.forEach((store) => {
-      // Find day with most capacity
-      let bestDay = null;
-      let maxCapacity = 0;
+  assignMultipleVisitStore(storeId, visits) {
+    const sortedVisits = visits.sort((a, b) => a.visitNum - b.visitNum);
+    const optimalGap = Math.max(
+      14,
+      Math.floor(this.vehicles.length / visits.length)
+    );
 
-      this.flatDays.forEach((day) => {
-        const capacity =
-          CONFIG.CLUSTERING.MAX_STORES_PER_DAY - day.stores.length;
-        if (capacity > maxCapacity) {
-          maxCapacity = capacity;
-          bestDay = day;
+    let nextDay = 0;
+    const assignedVehicles = [];
+
+    sortedVisits.forEach((visit, index) => {
+      let assigned = false;
+      for (let i = nextDay; i < this.vehicles.length; i++) {
+        const vehicle = this.vehicles[i];
+        const hasValidGap = assignedVehicles.every(
+          (prevDay) => Math.abs(i - prevDay) >= 14
+        );
+
+        if (this.canAssignStore(vehicle, visit) && hasValidGap) {
+          this.assignStoreToVehicle(vehicle, visit);
+          assignedVehicles.push(i);
+          nextDay = i + 14;
+          assigned = true;
+          Utils.log(
+            `✅ ${storeId} visit ${visit.visitNum} → Vehicle ${vehicle.id}`,
+            "INFO"
+          );
+          break;
         }
-      });
+      }
 
-      if (bestDay && maxCapacity > 0) {
-        bestDay.stores.push(store);
+      if (!assigned) {
         Utils.log(
-          `Added remaining store ${store.name} to Day ${
-            bestDay.globalDayIndex + 1
-          }`,
-          "INFO"
+          `❌ ${storeId} visit ${visit.visitNum}: No suitable vehicle`,
+          "ERROR"
         );
       }
     });
   }
 
-  // ==================== PHASE 2: MULTI-VISIT REBALANCING ====================
+  // ==================== SINGLE-VISIT ASSIGNMENT ====================
 
-  phase2_MultiVisitRebalancing() {
-    Utils.log("=== PHASE 2: MULTI-VISIT REBALANCING ===", "INFO");
+  assignSingleVisitStores(allInstances) {
+    const singleVisitStores = allInstances.filter(
+      (s) => !s.isMultiVisit && !this.isAssigned(s)
+    );
 
-    // Find all multi-visit stores across all days
-    const multiVisitStores = this.identifyMultiVisitStores();
+    if (singleVisitStores.length === 0) return;
 
-    if (multiVisitStores.length === 0) {
-      Utils.log("No multi-visit stores found, skipping rebalancing", "INFO");
+    Utils.log(
+      `=== ASSIGNING ${singleVisitStores.length} SINGLE-VISIT STORES ===`,
+      "INFO"
+    );
+
+    // Apply savings algorithm
+    const savings = this.calculateSavings(singleVisitStores);
+    savings.sort((a, b) => b.saving - a.saving);
+
+    const assigned = new Set();
+
+    // Process savings pairs
+    savings.forEach(({ storeA, storeB, saving }) => {
+      if (assigned.has(storeA.visitId) || assigned.has(storeB.visitId)) return;
+
+      const vehicle = this.findBestVehicleForPair(storeA, storeB);
+      if (vehicle) {
+        this.assignStoreToVehicle(vehicle, storeA);
+        this.assignStoreToVehicle(vehicle, storeB);
+        assigned.add(storeA.visitId);
+        assigned.add(storeB.visitId);
+        Utils.log(
+          `Paired: ${storeA.name} + ${storeB.name} → Vehicle ${
+            vehicle.id
+          } (${saving.toFixed(1)}km saved)`,
+          "INFO"
+        );
+      }
+    });
+
+    // Assign remaining individual stores
+    singleVisitStores.forEach((store) => {
+      if (!assigned.has(store.visitId)) {
+        this.assignSingleStore(store);
+      }
+    });
+  }
+
+  assignSingleStore(store) {
+    const bestVehicle = this.findBestVehicleForStore(store);
+    if (bestVehicle) {
+      this.assignStoreToVehicle(bestVehicle, store);
+      Utils.log(`✅ ${store.name} → Vehicle ${bestVehicle.id}`, "INFO");
+    } else {
+      Utils.log(`❌ ${store.name}: No suitable vehicle`, "ERROR");
+    }
+  }
+
+  // ==================== CONSTRAINT CHECKING ====================
+
+  canAssignStore(vehicle, store) {
+    // Capacity check
+    if (vehicle.currentLoad >= vehicle.capacity) return false;
+
+    // Multi-visit gap check
+    if (store.isMultiVisit && this.hasMultiVisitConflict(vehicle, store))
+      return false;
+
+    // Time feasibility check
+    return this.isTimeFeasible(vehicle, [store]);
+  }
+
+  hasMultiVisitConflict(vehicle, store) {
+    const storeId = store.storeId || store.name;
+    return this.vehicles.some((v) => {
+      if (v.id === vehicle.id) return false;
+      const hasStore = v.route.some((s) => (s.storeId || s.name) === storeId);
+      const dayGap = Math.abs(v.id - vehicle.id);
+      return hasStore && dayGap < 14;
+    });
+  }
+
+  isTimeFeasible(vehicle, newStores) {
+    const testRoute = [...vehicle.route, ...newStores];
+    const simulation = this.simulateRoute(vehicle, testRoute);
+    return simulation.finishTime <= vehicle.workEnd - vehicle.timeBuffer;
+  }
+
+  // ==================== SCORING AND SELECTION ====================
+
+  calculatePairScore(vehicle1, vehicle2, visit1, visit2) {
+    const districtBonus1 = vehicle1.districts.has(visit1.district) ? 15 : 0;
+    const districtBonus2 = vehicle2.districts.has(visit2.district) ? 15 : 0;
+    const capacityScore1 = (vehicle1.capacity - vehicle1.currentLoad) * 2;
+    const capacityScore2 = (vehicle2.capacity - vehicle2.currentLoad) * 2;
+    const timeScore1 = Math.max(
+      0,
+      (vehicle1.workEnd - vehicle1.estimatedFinishTime) / 10
+    );
+    const timeScore2 = Math.max(
+      0,
+      (vehicle2.workEnd - vehicle2.estimatedFinishTime) / 10
+    );
+
+    return (
+      districtBonus1 +
+      districtBonus2 +
+      capacityScore1 +
+      capacityScore2 +
+      timeScore1 +
+      timeScore2
+    );
+  }
+
+  findBestVehicleForStore(store) {
+    let bestVehicle = null;
+    let bestScore = -1;
+
+    this.vehicles.forEach((vehicle) => {
+      if (!this.canAssignStore(vehicle, store)) return;
+
+      const districtBonus = vehicle.districts.has(store.district) ? 20 : 0;
+      const capacityScore = (vehicle.capacity - vehicle.currentLoad) * 3;
+      const timeScore = Math.max(
+        0,
+        (vehicle.workEnd - vehicle.estimatedFinishTime) / 15
+      );
+      const insertionCost = this.calculateInsertionCost(vehicle, store);
+
+      const score = districtBonus + capacityScore + timeScore - insertionCost;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestVehicle = vehicle;
+      }
+    });
+
+    return bestVehicle;
+  }
+
+  findBestVehicleForPair(storeA, storeB) {
+    return this.vehicles.find((vehicle) => {
+      const hasCapacity = vehicle.capacity - vehicle.currentLoad >= 2;
+      const noMultiVisitConflicts =
+        !this.hasMultiVisitConflict(vehicle, storeA) &&
+        !this.hasMultiVisitConflict(vehicle, storeB);
+      const timeFeasible = this.isTimeFeasible(vehicle, [storeA, storeB]);
+
+      return hasCapacity && noMultiVisitConflicts && timeFeasible;
+    });
+  }
+
+  // ==================== SAVINGS ALGORITHM ====================
+
+  calculateSavings(stores) {
+    const savings = [];
+
+    for (let i = 0; i < stores.length; i++) {
+      for (let j = i + 1; j < stores.length; j++) {
+        const storeA = stores[i];
+        const storeB = stores[j];
+
+        const depotToA = Utils.distance(
+          this.depot.lat,
+          this.depot.lng,
+          storeA.lat,
+          storeA.lng
+        );
+        const depotToB = Utils.distance(
+          this.depot.lat,
+          this.depot.lng,
+          storeB.lat,
+          storeB.lng
+        );
+        const AToB = Utils.distance(
+          storeA.lat,
+          storeA.lng,
+          storeB.lat,
+          storeB.lng
+        );
+
+        const saving = depotToA + depotToB - AToB;
+
+        if (saving > 0) {
+          savings.push({ storeA, storeB, saving });
+        }
+      }
+    }
+
+    return savings;
+  }
+
+  calculateInsertionCost(vehicle, store) {
+    if (vehicle.route.length === 0) {
+      return Utils.distance(
+        this.depot.lat,
+        this.depot.lng,
+        store.lat,
+        store.lng
+      );
+    }
+
+    const lastStore = vehicle.route[vehicle.route.length - 1];
+    return Utils.distance(lastStore.lat, lastStore.lng, store.lat, store.lng);
+  }
+
+  // ==================== VEHICLE ASSIGNMENT ====================
+
+  assignStoreToVehicle(vehicle, store) {
+    vehicle.route.push(store);
+    vehicle.currentLoad += 1;
+    vehicle.districts.add(store.district);
+
+    // Update distance
+    if (vehicle.route.length === 1) {
+      vehicle.totalDistance += Utils.distance(
+        this.depot.lat,
+        this.depot.lng,
+        store.lat,
+        store.lng
+      );
+    } else {
+      const prevStore = vehicle.route[vehicle.route.length - 2];
+      vehicle.totalDistance += Utils.distance(
+        prevStore.lat,
+        prevStore.lng,
+        store.lat,
+        store.lng
+      );
+    }
+
+    // Update time estimate
+    this.updateVehicleTimeEstimate(vehicle);
+  }
+
+  updateVehicleTimeEstimate(vehicle) {
+    if (vehicle.route.length === 0) return;
+
+    const simulation = this.simulateRoute(vehicle, vehicle.route);
+    vehicle.estimatedFinishTime = simulation.finishTime;
+  }
+
+  // ==================== TIME SIMULATION ====================
+
+  simulateRoute(vehicle, stores) {
+    if (stores.length === 0) {
+      return { finishTime: vehicle.workStart, totalTime: 0, hasBreak: false };
+    }
+
+    let currentTime = vehicle.workStart;
+    let currentLat = this.depot.lat;
+    let currentLng = this.depot.lng;
+    let hasBreak = false;
+    let totalTime = 0;
+
+    // Simulate each store visit
+    stores.forEach((store) => {
+      // Travel time
+      const distance = Utils.distance(
+        currentLat,
+        currentLng,
+        store.lat,
+        store.lng
+      );
+      const travelTime = this.calculateTravelTime(
+        distance,
+        currentLat === this.depot.lat
+      );
+      currentTime += travelTime;
+      totalTime += travelTime;
+
+      // Break handling
+      if (
+        !hasBreak &&
+        currentTime >= vehicle.breakStart &&
+        currentTime < vehicle.breakEnd
+      ) {
+        currentTime = vehicle.breakEnd;
+        hasBreak = true;
+      }
+
+      // Visit time
+      const visitTime =
+        CONFIG.BUFFER_TIME + (store.visitTime || CONFIG.DEFAULT_VISIT_TIME);
+      currentTime += visitTime;
+      totalTime += visitTime;
+
+      currentLat = store.lat;
+      currentLng = store.lng;
+    });
+
+    // Return to depot
+    const returnDistance = Utils.distance(
+      currentLat,
+      currentLng,
+      this.depot.lat,
+      this.depot.lng
+    );
+    const returnTime = this.calculateTravelTime(returnDistance, false);
+    currentTime += returnTime;
+    totalTime += returnTime;
+
+    return {
+      finishTime: currentTime,
+      totalTime: totalTime,
+      hasBreak: hasBreak,
+      overTime: Math.max(0, currentTime - vehicle.workEnd),
+    };
+  }
+
+  calculateTravelTime(distance, isFromDepot) {
+    if (isFromDepot) {
+      return Math.round(distance * 3); // 3 min/km from depot
+    } else {
+      return Math.max(3, Math.round(distance * 3.5)); // 3.5 min/km between stores
+    }
+  }
+
+  // ==================== FINAL OPTIMIZATION ====================
+
+  finalOptimization() {
+    Utils.log("=== FINAL OPTIMIZATION ===", "INFO");
+
+    // Phase 1: Optimize route order within each vehicle
+    this.vehicles.forEach((vehicle) => {
+      if (vehicle.route.length > 1) {
+        vehicle.route = this.optimizeRouteOrder(vehicle.route);
+        this.updateVehicleTimeEstimate(vehicle);
+      }
+    });
+
+    // Phase 2: Fill under-utilized days with nearby unassigned stores
+    this.phase2_FillUnderutilizedDays();
+
+    // Phase 3: Handle remaining time violations
+    this.resolveTimeViolations();
+  }
+
+  // ==================== PHASE 2: FILL UNDER-UTILIZED DAYS ====================
+
+  phase2_FillUnderutilizedDays() {
+    Utils.log("=== PHASE 2: FILLING UNDER-UTILIZED DAYS ===", "INFO");
+
+    // Find under-utilized vehicles (finish early + have capacity)
+    const underutilizedVehicles = this.findUnderutilizedVehicles();
+
+    if (underutilizedVehicles.length === 0) {
+      Utils.log("No under-utilized vehicles found", "INFO");
+      return;
+    }
+
+    // Get all unassigned stores
+    const unassignedStores = this.getAllUnassignedStores();
+
+    if (unassignedStores.length === 0) {
+      Utils.log("No unassigned stores available for Phase 2", "INFO");
       return;
     }
 
     Utils.log(
-      `Found ${multiVisitStores.length} multi-visit store groups`,
+      `Found ${underutilizedVehicles.length} under-utilized vehicles and ${unassignedStores.length} unassigned stores`,
       "INFO"
     );
 
-    // For each multi-visit store group, ensure 14-day gaps
-    multiVisitStores.forEach((storeGroup) => {
-      this.rebalanceMultiVisitStore(storeGroup);
+    // For each under-utilized vehicle, try to add nearby stores
+    underutilizedVehicles.forEach((vehicleInfo) => {
+      this.fillVehicleWithNearbyStores(vehicleInfo, unassignedStores);
     });
 
-    Utils.log("Phase 2 completed: Multi-visit stores rebalanced", "INFO");
+    Utils.log("Phase 2 optimization completed", "INFO");
   }
 
-  // NEW: Identify multi-visit stores across all days
-  identifyMultiVisitStores() {
-    const storeGroups = {};
+  findUnderutilizedVehicles() {
+    const underutilized = [];
 
-    // Collect all stores from all days
-    this.flatDays.forEach((day, dayIndex) => {
-      day.stores.forEach((store) => {
-        const storeId = store.storeId || store.name;
-        if (!storeGroups[storeId]) {
-          storeGroups[storeId] = {
-            storeId: storeId,
-            visits: [],
-            isMultiVisit: store.isMultiVisit,
-          };
-        }
-        storeGroups[storeId].visits.push({
-          store: store,
-          dayIndex: dayIndex,
-          day: day,
-        });
-      });
-    });
+    this.vehicles.forEach((vehicle) => {
+      if (vehicle.route.length === 0) return; // Skip empty vehicles
 
-    // Filter to only multi-visit stores
-    return Object.values(storeGroups).filter(
-      (group) => group.visits.length > 1
-    );
-  }
+      const simulation = this.simulateRoute(vehicle, vehicle.route);
+      const availableCapacity = vehicle.capacity - vehicle.currentLoad;
+      const finishTime = simulation.finishTime;
+      const timeRemaining = vehicle.workEnd - finishTime;
+      const timeBuffer = vehicle.timeBuffer;
 
-  // NEW: Rebalance a specific multi-visit store
-  rebalanceMultiVisitStore(storeGroup) {
-    const { storeId, visits } = storeGroup;
+      // Criteria for under-utilization:
+      // 1. Has available capacity (at least 1 store)
+      // 2. Finishes early (more than 60 minutes before end time including buffer)
+      // 3. Not already at optimal load
+      const hasCapacity = availableCapacity >= 1;
+      const finishesEarly = timeRemaining > 60 + timeBuffer; // 60 min + safety buffer
+      const notOptimal = vehicle.currentLoad < vehicle.capacity * 0.8; // Less than 80% utilized
 
-    if (visits.length < 2) return; // Not actually multi-visit
+      if (hasCapacity && finishesEarly && notOptimal) {
+        underutilized.push({
+          vehicle: vehicle,
+          availableCapacity: availableCapacity,
+          timeRemaining: timeRemaining,
+          currentFinishTime: finishTime,
+          utilizationRate: (vehicle.currentLoad / vehicle.capacity) * 100,
 
-    Utils.log(
-      `Rebalancing multi-visit store: ${storeId} (${visits.length} visits)`,
-      "INFO"
-    );
-
-    // Remove all visits from current days
-    visits.forEach((visit) => {
-      const dayStores = visit.day.stores;
-      const storeIndex = dayStores.findIndex(
-        (s) =>
-          (s.visitId || s.name) === (visit.store.visitId || visit.store.name)
-      );
-      if (storeIndex > -1) {
-        dayStores.splice(storeIndex, 1);
-      }
-    });
-
-    // Find new day assignments with 14-day gaps
-    const newDayAssignments = this.findDaysWithGaps(visits.length, 14);
-
-    if (newDayAssignments.length >= visits.length) {
-      // Assign visits to new days
-      visits.forEach((visit, index) => {
-        const targetDayIndex = newDayAssignments[index];
-        const targetDay = this.flatDays[targetDayIndex];
-
-        if (
-          targetDay &&
-          targetDay.stores.length < CONFIG.CLUSTERING.MAX_STORES_PER_DAY
-        ) {
-          targetDay.stores.push(visit.store);
-          Utils.log(
-            `Moved ${storeId} visit ${index + 1} to Day ${targetDayIndex + 1}`,
-            "INFO"
-          );
-        } else {
-          // Fallback: add to day with most capacity
-          const fallbackDay = this.findDayWithMostCapacity();
-          if (fallbackDay) {
-            fallbackDay.stores.push(visit.store);
-            Utils.log(
-              `Fallback: Added ${storeId} visit ${index + 1} to Day ${
-                fallbackDay.globalDayIndex + 1
-              }`,
-              "WARN"
-            );
-          }
-        }
-      });
-    } else {
-      Utils.log(
-        `Could not find enough days with 14-day gaps for ${storeId}, using best available`,
-        "WARN"
-      );
-
-      // Fallback: distribute to available days
-      visits.forEach((visit, index) => {
-        const fallbackDay = this.findDayWithMostCapacity();
-        if (fallbackDay) {
-          fallbackDay.stores.push(visit.store);
-        }
-      });
-    }
-  }
-
-  // NEW: Find days with specified gaps
-  findDaysWithGaps(visitCount, minGapDays) {
-    const assignments = [];
-    const totalDays = this.flatDays.length;
-
-    if (visitCount === 2) {
-      // For 2 visits, find days at least 14 days apart
-      for (let firstDay = 0; firstDay < totalDays - minGapDays; firstDay++) {
-        const secondDay = firstDay + minGapDays;
-        if (secondDay < totalDays) {
-          assignments.push([firstDay, secondDay]);
-        }
-      }
-
-      // Return the assignment with days that have most capacity
-      if (assignments.length > 0) {
-        const bestAssignment = assignments.reduce((best, current) => {
-          const currentCapacity = current.reduce((sum, dayIndex) => {
-            return (
-              sum +
-              (CONFIG.CLUSTERING.MAX_STORES_PER_DAY -
-                this.flatDays[dayIndex].stores.length)
-            );
-          }, 0);
-
-          const bestCapacity = best.reduce((sum, dayIndex) => {
-            return (
-              sum +
-              (CONFIG.CLUSTERING.MAX_STORES_PER_DAY -
-                this.flatDays[dayIndex].stores.length)
-            );
-          }, 0);
-
-          return currentCapacity > bestCapacity ? current : best;
+          // Calculate potential for additional stores
+          potentialStores: Math.min(
+            availableCapacity,
+            Math.floor((timeRemaining - timeBuffer) / 45) // 45 min per store estimate
+          ),
         });
 
-        return bestAssignment;
-      }
-    } else {
-      // For 3+ visits, distribute with minimum gaps
-      const interval = Math.max(minGapDays, Math.floor(totalDays / visitCount));
-      for (let i = 0; i < visitCount; i++) {
-        const dayIndex = Math.min(i * interval, totalDays - 1);
-        assignments.push(dayIndex);
-      }
-    }
-
-    return assignments;
-  }
-
-  // NEW: Find day with most available capacity
-  findDayWithMostCapacity() {
-    let bestDay = null;
-    let maxCapacity = 0;
-
-    this.flatDays.forEach((day) => {
-      const capacity = CONFIG.CLUSTERING.MAX_STORES_PER_DAY - day.stores.length;
-      if (capacity > maxCapacity) {
-        maxCapacity = capacity;
-        bestDay = day;
-      }
-    });
-
-    return bestDay;
-  }
-
-  // ==================== PHASE 3: FINE-TUNING & TIME VALIDATION ====================
-
-  phase3_FineTuning() {
-    Utils.log("=== PHASE 3: FINE-TUNING & TIME VALIDATION ===", "INFO");
-
-    // Validate each day for time constraints and adjust if needed
-    this.flatDays.forEach((day, dayIndex) => {
-      if (day.stores.length === 0) return;
-
-      Utils.log(
-        `Fine-tuning Day ${dayIndex + 1}: ${day.stores.length} stores`,
-        "INFO"
-      );
-
-      // Quick time check
-      const timeCheck = this.validateDayTiming(day);
-
-      if (!timeCheck.valid) {
         Utils.log(
-          `Day ${dayIndex + 1} exceeds time limits. Removing ${
-            timeCheck.storesToRemove
-          } stores`,
-          "WARN"
+          `Under-utilized Vehicle ${vehicle.id}: ${vehicle.currentLoad}/${
+            vehicle.capacity
+          } stores, finishes at ${Utils.formatTime(
+            finishTime
+          )} (${timeRemaining} min remaining), potential: ${Math.min(
+            availableCapacity,
+            Math.floor((timeRemaining - timeBuffer) / 45)
+          )} more stores`,
+          "INFO"
         );
-
-        // Remove stores that don't fit (from the end of the route)
-        const storesToMove = day.stores.splice(-timeCheck.storesToRemove);
-
-        // Try to place removed stores on other days
-        this.redistributeStores(storesToMove);
       }
     });
 
-    // Final balance check - redistribute if needed
-    this.finalBalanceCheck();
-
-    Utils.log(
-      "Phase 3 completed: Time validation and final tuning done",
-      "INFO"
-    );
+    // Sort by utilization rate (lowest first - most under-utilized)
+    return underutilized.sort((a, b) => a.utilizationRate - b.utilizationRate);
   }
 
-  // NEW: Quick time validation for a day
-  validateDayTiming(day) {
-    if (day.stores.length === 0) return { valid: true, storesToRemove: 0 };
+  getAllUnassignedStores() {
+    if (!this.allVisitInstances) {
+      Utils.log("No visit instances available for Phase 2", "WARN");
+      return [];
+    }
 
-    // Simple time calculation
-    const orderedStores = this.simpleNearestNeighbor([...day.stores]);
-    let currentTime = CONFIG.WORK.START;
-    let validStoreCount = 0;
+    // Get all assigned store IDs
+    const assignedIds = new Set();
+    this.vehicles.forEach((vehicle) => {
+      vehicle.route.forEach((store) => {
+        assignedIds.add(store.visitId || store.name);
+      });
+    });
 
-    const breakConfig = day.isFriday ? CONFIG.FRIDAY_PRAYER : CONFIG.LUNCH;
-    let hasBreak = false;
+    // Find unassigned stores
+    const unassigned = this.allVisitInstances.filter(
+      (instance) => !assignedIds.has(instance.visitId || instance.name)
+    );
 
-    for (let i = 0; i < orderedStores.length; i++) {
-      const store = orderedStores[i];
+    Utils.log(
+      `Found ${unassigned.length} unassigned stores for Phase 2 optimization`,
+      "INFO"
+    );
 
-      // Add travel time (simplified)
-      if (i > 0) {
-        const prevStore = orderedStores[i - 1];
-        const distance = Utils.distance(
-          prevStore.lat,
-          prevStore.lng,
+    return unassigned;
+  }
+
+  fillVehicleWithNearbyStores(vehicleInfo, unassignedStores) {
+    const vehicle = vehicleInfo.vehicle;
+    const maxAdditionalStores = vehicleInfo.potentialStores;
+
+    if (maxAdditionalStores <= 0) return;
+
+    Utils.log(
+      `Filling Vehicle ${vehicle.id} with up to ${maxAdditionalStores} additional stores`,
+      "INFO"
+    );
+
+    // Calculate vehicle's current geographic center
+    const vehicleCenter = this.calculateVehicleCenter(vehicle);
+
+    // Find nearby unassigned stores
+    const nearbyStores = unassignedStores
+      .map((store) => ({
+        store: store,
+        distanceFromVehicle: Utils.distance(
+          vehicleCenter.lat,
+          vehicleCenter.lng,
           store.lat,
           store.lng
+        ),
+      }))
+      .filter((item) => {
+        // Apply constraints
+        const withinReasonableDistance = item.distanceFromVehicle <= 15; // 15km from vehicle center
+        const noMultiVisitConflict =
+          !item.store.isMultiVisit ||
+          !this.hasMultiVisitConflict(vehicle, item.store);
+        const withinDistanceLimit =
+          item.store.distanceFromDepot <=
+          (CONFIG.TRAVEL_LIMITS?.MAX_DISTANCE_FROM_HOME || 30);
+
+        return (
+          withinReasonableDistance &&
+          noMultiVisitConflict &&
+          withinDistanceLimit
         );
-        const isSameMall =
-          store.mallClusterId &&
-          store.mallClusterId === prevStore.mallClusterId;
-        const travelTime = isSameMall
-          ? Math.max(2, Math.round(distance * 15))
-          : Math.round(distance * 3);
-        currentTime += travelTime;
-      }
+      })
+      .sort((a, b) => a.distanceFromVehicle - b.distanceFromVehicle); // Closest first
 
-      // Handle break
-      if (
-        !hasBreak &&
-        currentTime >= breakConfig.START &&
-        currentTime < breakConfig.END
-      ) {
-        currentTime = breakConfig.END;
-        hasBreak = true;
-      }
+    Utils.log(
+      `Found ${nearbyStores.length} nearby candidate stores for Vehicle ${vehicle.id}`,
+      "INFO"
+    );
 
-      // Add visit time
-      currentTime += CONFIG.BUFFER_TIME + store.visitTime;
+    // Try to add stores one by one
+    let addedStores = 0;
 
-      // Check if we're still within work hours
-      if (currentTime <= CONFIG.WORK.END) {
-        validStoreCount++;
+    for (const item of nearbyStores) {
+      if (addedStores >= maxAdditionalStores) break;
+
+      const store = item.store;
+
+      // Check if we can still add this store (time + capacity)
+      if (this.canAddStoreToVehicle(vehicle, store)) {
+        this.assignStoreToVehicle(vehicle, store);
+        addedStores++;
+
+        // Remove from unassigned list
+        const unassignedIndex = unassignedStores.indexOf(store);
+        if (unassignedIndex > -1) {
+          unassignedStores.splice(unassignedIndex, 1);
+        }
+
+        Utils.log(
+          `✅ Phase 2: Added ${store.name} to Vehicle ${
+            vehicle.id
+          } (${item.distanceFromVehicle.toFixed(1)}km from vehicle center)`,
+          "INFO"
+        );
+
+        // Re-optimize route order after adding store
+        vehicle.route = this.optimizeRouteOrder(vehicle.route);
+        this.updateVehicleTimeEstimate(vehicle);
+
+        // Check if vehicle is now well-utilized
+        const newSimulation = this.simulateRoute(vehicle, vehicle.route);
+        const newTimeRemaining = vehicle.workEnd - newSimulation.finishTime;
+
+        if (newTimeRemaining < 60 + vehicle.timeBuffer) {
+          Utils.log(
+            `Vehicle ${vehicle.id} now well-utilized, stopping Phase 2 additions`,
+            "INFO"
+          );
+          break;
+        }
       } else {
-        break; // Remaining stores won't fit
+        Utils.log(
+          `Cannot add ${store.name} to Vehicle ${vehicle.id}: constraint violation`,
+          "INFO"
+        );
       }
     }
 
-    const storesToRemove = Math.max(0, orderedStores.length - validStoreCount);
+    if (addedStores > 0) {
+      const finalSimulation = this.simulateRoute(vehicle, vehicle.route);
+      const newUtilization = (vehicle.currentLoad / vehicle.capacity) * 100;
+
+      Utils.log(
+        `✅ Phase 2 completed for Vehicle ${
+          vehicle.id
+        }: Added ${addedStores} stores, new utilization: ${newUtilization.toFixed(
+          1
+        )}%, finishes at ${Utils.formatTime(finalSimulation.finishTime)}`,
+        "INFO"
+      );
+    } else {
+      Utils.log(
+        `No stores could be added to Vehicle ${vehicle.id} due to constraints`,
+        "WARN"
+      );
+    }
+  }
+
+  calculateVehicleCenter(vehicle) {
+    if (vehicle.route.length === 0) {
+      return { lat: this.depot.lat, lng: this.depot.lng };
+    }
+
+    const totalLat = vehicle.route.reduce((sum, store) => sum + store.lat, 0);
+    const totalLng = vehicle.route.reduce((sum, store) => sum + store.lng, 0);
 
     return {
-      valid: storesToRemove === 0,
-      storesToRemove: storesToRemove,
-      validStoreCount: validStoreCount,
+      lat: totalLat / vehicle.route.length,
+      lng: totalLng / vehicle.route.length,
     };
   }
 
-  // NEW: Redistribute stores that don't fit
-  redistributeStores(storesToRedistribute) {
-    storesToRedistribute.forEach((store) => {
-      // Find day with capacity that can accommodate this store
-      let bestDay = null;
-      let bestScore = -1;
-
-      this.flatDays.forEach((day) => {
-        const capacity =
-          CONFIG.CLUSTERING.MAX_STORES_PER_DAY - day.stores.length;
-        if (capacity > 0) {
-          // Quick time check for adding this store
-          const testStores = [...day.stores, store];
-          const timeCheck = this.validateDayTiming({
-            ...day,
-            stores: testStores,
-          });
-
-          if (timeCheck.valid) {
-            // Score based on capacity and geographic fit
-            const dayCenter = this.calculateDayCenter(day.stores);
-            const distance = Utils.distance(
-              dayCenter.lat,
-              dayCenter.lng,
-              store.lat,
-              store.lng
-            );
-            const score = capacity * 10 - distance; // Prefer days with more capacity and closer geography
-
-            if (score > bestScore) {
-              bestScore = score;
-              bestDay = day;
-            }
-          }
-        }
-      });
-
-      if (bestDay) {
-        bestDay.stores.push(store);
-        Utils.log(
-          `Redistributed store ${store.name} to Day ${
-            bestDay.globalDayIndex + 1
-          }`,
-          "INFO"
-        );
-      } else {
-        Utils.log(
-          `Could not redistribute store ${store.name} - no suitable day found`,
-          "WARN"
-        );
-      }
-    });
-  }
-
-  // NEW: Final balance check and redistribution
-  finalBalanceCheck() {
-    Utils.log("Performing final balance check", "INFO");
-
-    // Calculate current distribution
-    const storeCounts = this.flatDays.map((day) => day.stores.length);
-    const avgStores =
-      storeCounts.reduce((sum, count) => sum + count, 0) / this.flatDays.length;
-    const maxStores = Math.max(...storeCounts);
-    const minStores = Math.min(...storeCounts);
-
-    Utils.log(
-      `Current distribution: avg=${avgStores.toFixed(
-        1
-      )}, min=${minStores}, max=${maxStores}`,
-      "INFO"
-    );
-
-    // If imbalance is significant, redistribute
-    const imbalanceThreshold = 5; // If difference > 5 stores, rebalance
-
-    if (maxStores - minStores > imbalanceThreshold) {
-      Utils.log(
-        "Significant imbalance detected, performing redistribution",
-        "INFO"
-      );
-
-      const overloadedDays = this.flatDays.filter(
-        (day) => day.stores.length >= avgStores + 3
-      );
-      const underloadedDays = this.flatDays.filter(
-        (day) => day.stores.length <= avgStores - 3
-      );
-
-      overloadedDays.forEach((overloadedDay) => {
-        underloadedDays.forEach((underloadedDay) => {
-          const capacity =
-            CONFIG.CLUSTERING.MAX_STORES_PER_DAY - underloadedDay.stores.length;
-          const excess = overloadedDay.stores.length - Math.ceil(avgStores);
-
-          const storesToMove = Math.min(capacity, excess, 3); // Move max 3 stores at a time
-
-          if (storesToMove > 0) {
-            // Move stores from end of overloaded day (assuming they're furthest)
-            const movedStores = overloadedDay.stores.splice(-storesToMove);
-            underloadedDay.stores.push(...movedStores);
-
-            Utils.log(
-              `Moved ${storesToMove} stores from Day ${
-                overloadedDay.globalDayIndex + 1
-              } to Day ${underloadedDay.globalDayIndex + 1}`,
-              "INFO"
-            );
-          }
-        });
-      });
-    }
-  }
-
-  // Helper methods (existing ones)
-  calculateDayCenter(stores) {
-    if (stores.length === 0) {
-      return { lat: CONFIG.START.LAT, lng: CONFIG.START.LNG };
+  canAddStoreToVehicle(vehicle, store) {
+    // Check capacity
+    if (vehicle.currentLoad >= vehicle.capacity) {
+      return false;
     }
 
-    const lat = stores.reduce((sum, s) => sum + s.lat, 0) / stores.length;
-    const lng = stores.reduce((sum, s) => sum + s.lng, 0) / stores.length;
+    // Check multi-visit conflicts
+    if (store.isMultiVisit && this.hasMultiVisitConflict(vehicle, store)) {
+      return false;
+    }
 
-    return { lat, lng };
+    // Check time feasibility with the new store
+    const testRoute = [...vehicle.route, store];
+    const testSimulation = this.simulateRoute(vehicle, testRoute);
+    const wouldFinishOnTime =
+      testSimulation.finishTime <= vehicle.workEnd - vehicle.timeBuffer;
+
+    return wouldFinishOnTime;
   }
 
-  simpleNearestNeighbor(stores) {
-    if (stores.length <= 1) return stores;
+  // ==================== ROUTE OPTIMIZATION ====================
 
-    const ordered = [];
+  optimizeRouteOrder(stores) {
+    if (stores.length <= 2) return stores;
+
+    // Simple nearest neighbor optimization
+    const optimized = [];
     const remaining = [...stores];
-    let currentLat = CONFIG.START.LAT;
-    let currentLng = CONFIG.START.LNG;
+    let currentLat = this.depot.lat;
+    let currentLng = this.depot.lng;
 
     while (remaining.length > 0) {
       let nearestIdx = 0;
-      let minDist = Utils.distance(
+      let minDistance = Utils.distance(
         currentLat,
         currentLng,
         remaining[0].lat,
@@ -753,505 +863,428 @@ class RouteOptimizer {
       );
 
       for (let i = 1; i < remaining.length; i++) {
-        const dist = Utils.distance(
+        const distance = Utils.distance(
           currentLat,
           currentLng,
           remaining[i].lat,
           remaining[i].lng
         );
-        if (dist < minDist) {
-          minDist = dist;
+        if (distance < minDistance) {
+          minDistance = distance;
           nearestIdx = i;
         }
       }
 
       const nearest = remaining.splice(nearestIdx, 1)[0];
-      ordered.push(nearest);
+      optimized.push(nearest);
       currentLat = nearest.lat;
       currentLng = nearest.lng;
     }
 
-    return ordered;
+    return optimized;
   }
 
-  // Final route optimization for each day
-  optimizeDayRoute(stores, dayInfo) {
-    if (!stores.length) return [];
-
-    // Group by mall clusters first
-    const mallGroups = {};
-    const individualStores = [];
-
-    stores.forEach((store) => {
-      if (store.mallClusterId) {
-        if (!mallGroups[store.mallClusterId]) {
-          mallGroups[store.mallClusterId] = [];
-        }
-        mallGroups[store.mallClusterId].push(store);
-      } else {
-        individualStores.push(store);
-      }
+  resolveTimeViolations() {
+    const violatingVehicles = this.vehicles.filter((v) => {
+      if (v.route.length === 0) return false;
+      const sim = this.simulateRoute(v, v.route);
+      return sim.finishTime > v.workEnd - v.timeBuffer;
     });
 
-    // Create route segments
-    const routeSegments = [];
+    Utils.log(
+      `Found ${violatingVehicles.length} vehicles with time violations`,
+      "INFO"
+    );
 
-    Object.entries(mallGroups).forEach(([mallId, mallStores]) => {
-      routeSegments.push({
-        type: "mall",
-        stores: mallStores,
-        centerLat:
-          mallStores[0].mallClusterInfo?.centerLat || mallStores[0].lat,
-        centerLng:
-          mallStores[0].mallClusterInfo?.centerLng || mallStores[0].lng,
-        mallId,
-      });
-    });
-
-    individualStores.forEach((store) => {
-      routeSegments.push({
-        type: "individual",
-        stores: [store],
-        centerLat: store.lat,
-        centerLng: store.lng,
-      });
-    });
-
-    // Optimize segment order by distance
-    const orderedSegments = this.optimizeSegmentOrder(routeSegments);
-
-    // Flatten to store list
-    const orderedStores = [];
-    orderedSegments.forEach((segment) => {
-      orderedStores.push(...segment.stores);
-    });
-
-    // Calculate final timing
-    return this.calculateFinalRouteTiming(orderedStores, dayInfo);
-  }
-
-  optimizeSegmentOrder(segments) {
-    if (segments.length <= 1) return segments;
-
-    const ordered = [];
-    const remaining = [...segments];
-    let currentLat = CONFIG.START.LAT;
-    let currentLng = CONFIG.START.LNG;
-
-    while (remaining.length > 0) {
-      let nearestIdx = 0;
-      let minDist = Utils.distance(
-        currentLat,
-        currentLng,
-        remaining[0].centerLat,
-        remaining[0].centerLng
+    violatingVehicles.forEach((vehicle) => {
+      const removed = this.removeExcessStores(vehicle);
+      Utils.log(
+        `Vehicle ${vehicle.id}: Removed ${removed} stores to fix time violation`,
+        "WARN"
       );
-
-      for (let i = 1; i < remaining.length; i++) {
-        const dist = Utils.distance(
-          currentLat,
-          currentLng,
-          remaining[i].centerLat,
-          remaining[i].centerLng
-        );
-        if (dist < minDist) {
-          minDist = dist;
-          nearestIdx = i;
-        }
-      }
-
-      const nearest = remaining.splice(nearestIdx, 1)[0];
-      ordered.push(nearest);
-
-      const lastStore = nearest.stores[nearest.stores.length - 1];
-      currentLat = lastStore.lat;
-      currentLng = lastStore.lng;
-    }
-
-    return ordered;
-  }
-
-  calculateFinalRouteTiming(stores, dayInfo) {
-    if (!stores.length) return [];
-
-    const route = [];
-    let currentTime = CONFIG.WORK.START;
-    let currentLat = CONFIG.START.LAT;
-    let currentLng = CONFIG.START.LNG;
-    let hasBreak = false;
-
-    const breakConfig = dayInfo.isFriday ? CONFIG.FRIDAY_PRAYER : CONFIG.LUNCH;
-
-    for (const [index, store] of stores.entries()) {
-      let arrivalTime, travelTime, distance;
-
-      if (index === 0) {
-        arrivalTime = CONFIG.WORK.START;
-        distance = Utils.distance(
-          CONFIG.START.LAT,
-          CONFIG.START.LNG,
-          store.lat,
-          store.lng
-        );
-        travelTime = 0;
-      } else {
-        distance = Utils.distance(currentLat, currentLng, store.lat, store.lng);
-
-        const prevStore = stores[index - 1];
-        const isSameMall =
-          store.mallClusterId &&
-          store.mallClusterId === prevStore.mallClusterId;
-
-        if (isSameMall) {
-          travelTime = Math.max(2, Math.round(distance * 15));
-        } else {
-          travelTime = Math.round(distance * 3);
-        }
-
-        if (
-          !hasBreak &&
-          currentTime >= breakConfig.START &&
-          currentTime < breakConfig.END
-        ) {
-          currentTime = breakConfig.END;
-          hasBreak = true;
-        }
-
-        arrivalTime = currentTime + travelTime;
-
-        const visitEndTime = arrivalTime + CONFIG.BUFFER_TIME + store.visitTime;
-
-        if (
-          !hasBreak &&
-          arrivalTime < breakConfig.END &&
-          visitEndTime > breakConfig.START
-        ) {
-          currentTime = breakConfig.END;
-          hasBreak = true;
-          arrivalTime = currentTime + travelTime;
-        }
-      }
-
-      const departTime = arrivalTime + CONFIG.BUFFER_TIME + store.visitTime;
-
-      route.push({
-        ...store,
-        order: route.length + 1,
-        distance,
-        duration: travelTime,
-        arrivalTime,
-        departTime,
-        dayInfo: dayInfo,
-        globalDayIndex: dayInfo.globalDayIndex,
-        isSameMallTravel:
-          index > 0 &&
-          store.mallClusterId &&
-          store.mallClusterId === stores[index - 1].mallClusterId,
-      });
-
-      currentLat = store.lat;
-      currentLng = store.lng;
-      currentTime = departTime;
-    }
-
-    return route;
-  }
-
-  // MAIN: Two-Phase Optimize Plan
-  optimizePlan(stores) {
-    const allVisitInstances = this.createVisitInstances(stores);
-
-    Utils.log("=== TWO-PHASE OPTIMIZATION STARTED ===", "INFO");
-
-    // Phase 1: Aggressive geographic assignment (ignore multi-visit constraints)
-    const unassignedStores =
-      this.phase1_AggressiveAssignment(allVisitInstances);
-
-    // Phase 2: Multi-visit rebalancing with 14-day gaps
-    this.phase2_MultiVisitRebalancing();
-
-    // Phase 3: Fine-tuning and time validation
-    this.phase3_FineTuning();
-
-    // Copy flat days back to week structure
-    this.copyFlatDaysToWeekStructure();
-
-    // Optimize routes within each day
-    this.flatDays.forEach((dayInfo) => {
-      const optimizedRoute = this.optimizeDayRoute(dayInfo.stores, dayInfo);
-      dayInfo.optimizedStores = optimizedRoute;
     });
+  }
 
-    // Copy optimized routes back to week structure
-    this.copyOptimizedRoutesToWeeks();
+  removeExcessStores(vehicle) {
+    let removed = 0;
 
-    Utils.log("=== TWO-PHASE OPTIMIZATION COMPLETED ===", "INFO");
+    while (vehicle.route.length > 0) {
+      const sim = this.simulateRoute(vehicle, vehicle.route);
+      if (sim.finishTime <= vehicle.workEnd - vehicle.timeBuffer) break;
+    }
+  }
 
-    // Log final distribution
-    this.logFinalDistribution();
+  removeExcessStores(vehicle) {
+    let removed = 0;
+
+    while (vehicle.route.length > 0) {
+      const sim = this.simulateRoute(vehicle, vehicle.route);
+      if (sim.finishTime <= vehicle.workEnd - vehicle.timeBuffer) break;
+
+      // Remove last store (simplest approach)
+      const removedStore = vehicle.route.pop();
+      vehicle.currentLoad -= 1;
+      removed++;
+
+      // Try to reassign to another vehicle
+      this.tryReassignStore(removedStore, vehicle);
+    }
+
+    this.updateVehicleTimeEstimate(vehicle);
+    return removed;
+  }
+
+  tryReassignStore(store, excludeVehicle) {
+    const candidates = this.vehicles.filter((v) => v.id !== excludeVehicle.id);
+    const bestVehicle = candidates.find((v) => this.canAssignStore(v, store));
+
+    if (bestVehicle) {
+      this.assignStoreToVehicle(bestVehicle, store);
+      Utils.log(
+        `Reassigned ${store.name} to Vehicle ${bestVehicle.id}`,
+        "INFO"
+      );
+    } else {
+      Utils.log(`Could not reassign ${store.name}`, "WARN");
+    }
+  }
+
+  // ==================== OUTPUT CONVERSION ====================
+
+  optimizePlan(stores) {
+    Utils.log("=== CVRP OPTIMIZATION WITH PHASE 2 STARTED ===", "INFO");
+
+    const visitInstances = this.createVisitInstances(stores);
+
+    // Store original instances for Phase 2 tracking
+    this.originalStores = [...stores];
+    this.allVisitInstances = [...visitInstances];
+
+    this.solveCVRP(visitInstances);
+    this.convertToWorkingDays();
+
+    Utils.log("=== CVRP OPTIMIZATION WITH PHASE 2 COMPLETED ===", "INFO");
+    this.logSolution();
 
     return {
       workingDays: this.workingDays,
-      unvisitedStores: unassignedStores,
-      statistics: this.calculateStatistics(allVisitInstances),
+      unvisitedStores: this.getUnvisitedStores(stores, visitInstances),
+      statistics: this.calculateStatistics(visitInstances),
       p1VisitFrequency: this.getAverageFrequency(stores, "P1"),
       hasW5: this.workingDays.length === 5,
     };
   }
 
-  // NEW: Log final distribution for debugging
-  logFinalDistribution() {
-    Utils.log("=== FINAL DISTRIBUTION SUMMARY ===", "INFO");
+  convertToWorkingDays() {
+    this.vehicles.forEach((vehicle) => {
+      const weekDay = this.workingDays[vehicle.weekIndex][vehicle.dayIndex];
 
-    const distribution = this.flatDays.map((day, index) => ({
-      day: index + 1,
-      week: day.weekIndex + 1,
-      dayName: day.dayName,
-      stores: day.optimizedStores ? day.optimizedStores.length : 0,
-    }));
+      if (vehicle.route.length > 0) {
+        weekDay.optimizedStores = this.createDetailedRoute(vehicle);
+        weekDay.totalDistance = vehicle.totalDistance;
+        weekDay.districts = Array.from(vehicle.districts);
+        weekDay.vehicleId = vehicle.id;
 
-    const totalStores = distribution.reduce((sum, d) => sum + d.stores, 0);
-    const activeDays = distribution.filter((d) => d.stores > 0).length;
-    const avgStores =
-      activeDays > 0 ? (totalStores / activeDays).toFixed(1) : 0;
-    const maxStores = Math.max(...distribution.map((d) => d.stores));
-    const minStores = Math.min(
-      ...distribution.filter((d) => d.stores > 0).map((d) => d.stores)
+        const simulation = this.simulateRoute(vehicle, vehicle.route);
+        weekDay.timing = {
+          startTime: vehicle.workStart,
+          finishTime: simulation.finishTime,
+          timeCompliant: simulation.finishTime <= vehicle.workEnd,
+          overTime: simulation.overTime,
+          hasBreak: simulation.hasBreak,
+        };
+      } else {
+        weekDay.optimizedStores = [];
+        weekDay.totalDistance = 0;
+        weekDay.districts = [];
+        weekDay.timing = null;
+      }
+    });
+  }
+
+  createDetailedRoute(vehicle) {
+    const route = [];
+    let currentTime = vehicle.workStart;
+    let currentLat = this.depot.lat;
+    let currentLng = this.depot.lng;
+    let hasBreak = false;
+
+    vehicle.route.forEach((store, index) => {
+      const distance = Utils.distance(
+        currentLat,
+        currentLng,
+        store.lat,
+        store.lng
+      );
+      const travelTime = this.calculateTravelTime(distance, index === 0);
+      currentTime += travelTime;
+
+      if (
+        !hasBreak &&
+        currentTime >= vehicle.breakStart &&
+        currentTime < vehicle.breakEnd
+      ) {
+        currentTime = vehicle.breakEnd;
+        hasBreak = true;
+      }
+
+      const arrivalTime = currentTime;
+      const visitTime =
+        CONFIG.BUFFER_TIME + (store.visitTime || CONFIG.DEFAULT_VISIT_TIME);
+      const departTime = arrivalTime + visitTime;
+
+      route.push({
+        ...store,
+        order: index + 1,
+        distance: distance,
+        duration: travelTime,
+        arrivalTime: arrivalTime,
+        departTime: departTime,
+      });
+
+      currentTime = departTime;
+      currentLat = store.lat;
+      currentLng = store.lng;
+    });
+
+    return route;
+  }
+
+  // ==================== UTILITIES ====================
+
+  isAssigned(store) {
+    return this.vehicles.some((v) =>
+      v.route.some(
+        (s) => (s.visitId || s.name) === (store.visitId || store.name)
+      )
     );
-    const emptyDays = distribution.filter((d) => d.stores === 0).length;
+  }
 
+  getUnvisitedStores(originalStores, visitInstances) {
+    const assignedIds = new Set();
+    this.vehicles.forEach((v) =>
+      v.route.forEach((s) => assignedIds.add(s.visitId))
+    );
+    return visitInstances.filter(
+      (instance) => !assignedIds.has(instance.visitId)
+    );
+  }
+
+  logSolution() {
+    const active = this.vehicles.filter((v) => v.route.length > 0);
+    const totalStores = this.vehicles.reduce(
+      (sum, v) => sum + v.route.length,
+      0
+    );
+    const totalDistance = this.vehicles.reduce(
+      (sum, v) => sum + v.totalDistance,
+      0
+    );
+
+    // Calculate utilization statistics
+    const utilizationStats = this.calculateUtilizationStats(active);
+
+    Utils.log(`=== CVRP SOLUTION WITH PHASE 2 OPTIMIZATION ===`, "INFO");
+    Utils.log(`Active days: ${active.length}/${this.vehicles.length}`, "INFO");
     Utils.log(`Total stores: ${totalStores}`, "INFO");
-    Utils.log(`Active days: ${activeDays}/${this.flatDays.length}`, "INFO");
-    Utils.log(`Average stores/day: ${avgStores}`, "INFO");
-    Utils.log(`Range: ${minStores} - ${maxStores} stores`, "INFO");
-    Utils.log(`Empty days: ${emptyDays}`, "INFO");
+    Utils.log(`Total distance: ${totalDistance.toFixed(1)}km`, "INFO");
+    Utils.log(
+      `Avg stores/day: ${(totalStores / active.length).toFixed(1)}`,
+      "INFO"
+    );
 
-    // Log each day's distribution
-    distribution.forEach((d) => {
-      if (d.stores > 0) {
-        Utils.log(
-          `Day ${d.day} (Week ${d.week}, ${d.dayName}): ${d.stores} stores`,
-          "INFO"
-        );
+    // Phase 2 specific logging
+    Utils.log(`=== UTILIZATION ANALYSIS ===`, "INFO");
+    Utils.log(
+      `Well-utilized days: ${utilizationStats.wellUtilized}/${active.length}`,
+      "INFO"
+    );
+    Utils.log(
+      `Under-utilized days: ${utilizationStats.underUtilized}/${active.length}`,
+      "INFO"
+    );
+    Utils.log(
+      `Average utilization: ${utilizationStats.averageUtilization.toFixed(1)}%`,
+      "INFO"
+    );
+    Utils.log(
+      `Days finishing early (>60 min): ${utilizationStats.earlyFinishers}`,
+      "INFO"
+    );
+
+    if (utilizationStats.underUtilized > 0) {
+      Utils.log(
+        `⚠️ Consider running Phase 2 optimization to fill under-utilized days`,
+        "WARN"
+      );
+    } else {
+      Utils.log(
+        `✅ Phase 2 optimization successful - all days well-utilized`,
+        "INFO"
+      );
+    }
+  }
+
+  calculateUtilizationStats(activeVehicles) {
+    let wellUtilized = 0;
+    let underUtilized = 0;
+    let totalUtilization = 0;
+    let earlyFinishers = 0;
+
+    activeVehicles.forEach((vehicle) => {
+      const utilizationRate = (vehicle.currentLoad / vehicle.capacity) * 100;
+      totalUtilization += utilizationRate;
+
+      const simulation = this.simulateRoute(vehicle, vehicle.route);
+      const timeRemaining = vehicle.workEnd - simulation.finishTime;
+
+      if (utilizationRate >= 80 || timeRemaining < 60 + vehicle.timeBuffer) {
+        wellUtilized++;
       } else {
-        Utils.log(`Day ${d.day} (Week ${d.week}, ${d.dayName}): EMPTY`, "WARN");
+        underUtilized++;
+      }
+
+      if (timeRemaining > 60 + vehicle.timeBuffer) {
+        earlyFinishers++;
       }
     });
-  }
-
-  // Copy flat days back to week structure
-  copyFlatDaysToWeekStructure() {
-    this.flatDays.forEach((flatDay) => {
-      const weekDay = this.workingDays[flatDay.weekIndex][flatDay.dayIndex];
-      weekDay.stores = [...flatDay.stores];
-    });
-  }
-
-  // Copy optimized routes back to week structure
-  copyOptimizedRoutesToWeeks() {
-    this.flatDays.forEach((flatDay) => {
-      const weekDay = this.workingDays[flatDay.weekIndex][flatDay.dayIndex];
-      weekDay.optimizedStores = flatDay.optimizedStores;
-    });
-  }
-
-  // Helper: Get average frequency for a priority
-  getAverageFrequency(stores, priority) {
-    const priorityStores = stores.filter((s) => s.priority === priority);
-    if (priorityStores.length === 0) return 0;
-
-    const avgFreq =
-      priorityStores.reduce((sum, s) => sum + (s.baseFrequency || 0), 0) /
-      priorityStores.length;
-    return avgFreq;
-  }
-
-  // Calculate enhanced statistics
-  calculateStatistics(allVisitInstances) {
-    let totalVisitsPlanned = 0;
-    let totalDistance = 0;
-    let multiVisitStores = 0;
-    let mallClusters = new Set();
-    let storesInMalls = 0;
-    let priorityDistribution = {};
-
-    const storeVisitCounts = {};
-    const retailerCounts = {};
-    const dailyStats = [];
-
-    this.flatDays.forEach((dayInfo, dayIndex) => {
-      if (dayInfo.optimizedStores && dayInfo.optimizedStores.length > 0) {
-        const dayStores = dayInfo.optimizedStores.length;
-        const dayDistance = dayInfo.optimizedStores.reduce(
-          (sum, s) => sum + (s.distance || 0),
-          0
-        );
-
-        dailyStats.push({
-          globalDay: dayIndex + 1,
-          week: dayInfo.weekIndex + 1,
-          day: dayInfo.dayName,
-          stores: dayStores,
-          distance: dayDistance.toFixed(1),
-        });
-
-        dayInfo.optimizedStores.forEach((store) => {
-          totalVisitsPlanned++;
-          totalDistance += store.distance || 0;
-
-          const storeId = store.storeId || store.name;
-          storeVisitCounts[storeId] = (storeVisitCounts[storeId] || 0) + 1;
-
-          const retailer = store.retailer || "Unknown";
-          retailerCounts[retailer] = (retailerCounts[retailer] || 0) + 1;
-
-          priorityDistribution[store.priority] =
-            (priorityDistribution[store.priority] || 0) + 1;
-
-          if (store.mallClusterId) {
-            mallClusters.add(store.mallClusterId);
-            storesInMalls++;
-          }
-        });
-      } else {
-        dailyStats.push({
-          globalDay: dayIndex + 1,
-          week: dayInfo.weekIndex + 1,
-          day: dayInfo.dayName,
-          stores: 0,
-          distance: 0,
-        });
-      }
-    });
-
-    Object.values(storeVisitCounts).forEach((visitCount) => {
-      if (visitCount > 1) multiVisitStores++;
-    });
-
-    const unvisitedCount = allVisitInstances.length - totalVisitsPlanned;
-    const workingDaysUsed = dailyStats.filter((d) => d.stores > 0).length;
-    const avgStoresPerDay =
-      workingDaysUsed > 0
-        ? (totalVisitsPlanned / workingDaysUsed).toFixed(1)
-        : 0;
-    const avgDistancePerDay =
-      workingDaysUsed > 0 ? (totalDistance / workingDaysUsed).toFixed(1) : 0;
-
-    // Enhanced day balance calculations
-    const storesPerDay = dailyStats.map((d) => d.stores);
-    const maxStoresPerDay = Math.max(...storesPerDay);
-    const minStoresPerDay = Math.min(...storesPerDay.filter((s) => s > 0)); // Exclude empty days
-    const emptyDays = storesPerDay.filter((s) => s === 0).length;
-    const balanceScore =
-      maxStoresPerDay > 0
-        ? Math.round((minStoresPerDay / maxStoresPerDay) * 100)
-        : 0;
 
     return {
-      totalStoresPlanned: totalVisitsPlanned,
-      totalStoresRequired: allVisitInstances.length,
-      uniqueStoresVisited: Object.keys(storeVisitCounts).length,
-      multiVisitStores: multiVisitStores,
-      unvisitedCount,
-      totalDistance,
-      workingDays: workingDaysUsed,
-      averageStoresPerDay: avgStoresPerDay,
-      averageDistancePerDay: avgDistancePerDay,
-      coveragePercentage:
-        allVisitInstances.length > 0
-          ? ((totalVisitsPlanned / allVisitInstances.length) * 100).toFixed(1)
+      wellUtilized,
+      underUtilized,
+      averageUtilization:
+        activeVehicles.length > 0
+          ? totalUtilization / activeVehicles.length
           : 0,
-      retailerCounts: retailerCounts,
-      priorityDistribution: priorityDistribution,
-
-      // Enhanced statistics
-      mallStats: {
-        totalMallClusters: mallClusters.size,
-        storesInMalls: storesInMalls,
-        avgStoresPerMall:
-          mallClusters.size > 0
-            ? Math.round((storesInMalls / mallClusters.size) * 10) / 10
-            : 0,
-        clusteringEfficiency:
-          totalVisitsPlanned > 0
-            ? Math.round((storesInMalls / totalVisitsPlanned) * 100)
-            : 0,
-        timeSavings: Math.round(storesInMalls * 5),
-      },
-
-      // NEW: Two-phase optimization stats
-      twoPhaseOptimization: {
-        maxStoresPerDay: maxStoresPerDay,
-        minStoresPerDay: minStoresPerDay === Infinity ? 0 : minStoresPerDay,
-        emptyDays: emptyDays,
-        totalDays: this.flatDays.length,
-        utilizationRate: Math.round(
-          (workingDaysUsed / this.flatDays.length) * 100
-        ),
-        balanceScore: balanceScore,
-        efficiency: `${avgStoresPerDay} stores/day, ${avgDistancePerDay}km/day`,
-        dailyBreakdown: dailyStats,
-
-        // Phase-specific metrics
-        phase1_AggressiveAssignment:
-          "Completed - All days filled to target capacity",
-        phase2_MultiVisitRebalancing: "Completed - 14-day gaps enforced",
-        phase3_FineTuning: "Completed - Time constraints validated",
-      },
-
-      // Multi-visit gap tracking
-      multiVisitGaps: this.calculateMultiVisitGaps(storeVisitCounts),
+      earlyFinishers,
     };
   }
 
-  // Calculate gaps between multi-visit stores
-  calculateMultiVisitGaps(storeVisitCounts) {
-    const gaps = [];
+  calculateStatistics(visitInstances) {
+    const active = this.vehicles.filter((v) => v.route.length > 0);
+    const totalStores = this.vehicles.reduce(
+      (sum, v) => sum + v.route.length,
+      0
+    );
+    const totalDistance = this.vehicles.reduce(
+      (sum, v) => sum + v.totalDistance,
+      0
+    );
 
-    Object.entries(storeVisitCounts).forEach(([storeId, visitCount]) => {
-      if (visitCount > 1) {
-        const storeVisits = [];
-        this.flatDays.forEach((day, dayIndex) => {
-          if (day.optimizedStores) {
-            day.optimizedStores.forEach((store) => {
-              if ((store.storeId || store.name) === storeId) {
-                storeVisits.push({
-                  dayIndex: dayIndex,
-                  visitNum: store.visitNum,
-                  week: day.weekIndex + 1,
-                  day: day.dayName,
-                });
-              }
-            });
+    // Enhanced statistics with Phase 2 tracking
+    const utilizationStats = this.calculateUtilizationStats(active);
+    const timeCompliant = active.filter((v) => {
+      const sim = this.simulateRoute(v, v.route);
+      return sim.finishTime <= v.workEnd;
+    }).length;
+
+    return {
+      totalStoresPlanned: totalStores,
+      totalStoresRequired: visitInstances.length,
+      workingDays: active.length,
+      averageStoresPerDay:
+        active.length > 0 ? (totalStores / active.length).toFixed(1) : 0,
+      averageDistancePerDay:
+        active.length > 0 ? (totalDistance / active.length).toFixed(1) : 0,
+      totalDistance: totalDistance,
+      coveragePercentage:
+        visitInstances.length > 0
+          ? ((totalStores / visitInstances.length) * 100).toFixed(1)
+          : 0,
+
+      // CVRP with Phase 2 statistics
+      cvrpOptimization: {
+        algorithm: "CVRP with Phase 2 Under-Utilization Filling",
+        constraintsEnforced: [
+          "30km distance limit",
+          "14-day multi-visit gaps",
+          "Work hour compliance",
+          "Capacity limits",
+          "Phase 2 efficiency optimization",
+        ],
+        vehicles: this.vehicles.length,
+        activeVehicles: active.length,
+        timeCompliant: timeCompliant,
+        timeComplianceRate:
+          active.length > 0
+            ? ((timeCompliant / active.length) * 100).toFixed(1) + "%"
+            : "100%",
+      },
+
+      // Phase 2 specific metrics
+      utilizationOptimization: {
+        wellUtilizedDays: utilizationStats.wellUtilized,
+        underUtilizedDays: utilizationStats.underUtilized,
+        averageUtilization:
+          utilizationStats.averageUtilization.toFixed(1) + "%",
+        earlyFinishers: utilizationStats.earlyFinishers,
+        phase2Effectiveness:
+          utilizationStats.underUtilized === 0
+            ? "Excellent"
+            : utilizationStats.underUtilized <= 2
+            ? "Good"
+            : "Needs Improvement",
+      },
+
+      // Multi-visit compliance
+      multiVisitCompliance: this.calculateMultiVisitStats(),
+    };
+  }
+
+  calculateMultiVisitStats() {
+    const multiVisitStores = {};
+
+    // Collect all multi-visit stores
+    this.vehicles.forEach((vehicle, vehicleIndex) => {
+      vehicle.route.forEach((store) => {
+        if (store.isMultiVisit) {
+          const storeId = store.storeId || store.name;
+          if (!multiVisitStores[storeId]) {
+            multiVisitStores[storeId] = [];
           }
-        });
-
-        storeVisits.sort((a, b) => a.dayIndex - b.dayIndex);
-        for (let i = 1; i < storeVisits.length; i++) {
-          const gapDays = storeVisits[i].dayIndex - storeVisits[i - 1].dayIndex;
-          gaps.push({
-            storeId: storeId,
-            visit1: storeVisits[i - 1],
-            visit2: storeVisits[i],
-            gapDays: gapDays,
-            meetsRequirement: gapDays >= 14,
+          multiVisitStores[storeId].push({
+            vehicleId: vehicle.id,
+            dayIndex: vehicleIndex,
+            visitNum: store.visitNum,
           });
+        }
+      });
+    });
+
+    const totalMultiVisitStores = Object.keys(multiVisitStores).length;
+    let validGaps = 0;
+    let totalGaps = 0;
+
+    Object.entries(multiVisitStores).forEach(([storeId, visits]) => {
+      if (visits.length > 1) {
+        visits.sort((a, b) => a.dayIndex - b.dayIndex);
+        for (let i = 1; i < visits.length; i++) {
+          const gap = visits[i].dayIndex - visits[i - 1].dayIndex;
+          totalGaps++;
+          if (gap >= 14) {
+            validGaps++;
+          }
         }
       }
     });
 
-    const validGaps = gaps.filter((g) => g.meetsRequirement).length;
-    const totalGaps = gaps.length;
-
     return {
-      totalMultiVisitStores: Object.values(storeVisitCounts).filter(
-        (count) => count > 1
-      ).length,
-      totalGaps: totalGaps,
-      validGaps: validGaps,
+      totalMultiVisitStores,
+      totalGaps,
+      validGaps,
       gapCompliance:
-        totalGaps > 0 ? Math.round((validGaps / totalGaps) * 100) : 100,
-      details: gaps.slice(0, 10),
+        totalGaps > 0
+          ? ((validGaps / totalGaps) * 100).toFixed(1) + "%"
+          : "100%",
     };
+  }
+
+  getAverageFrequency(stores, priority) {
+    const priorityStores = stores.filter((s) => s.priority === priority);
+    if (priorityStores.length === 0) return 0;
+    return (
+      priorityStores.reduce((sum, s) => sum + (s.baseFrequency || 0), 0) /
+      priorityStores.length
+    );
   }
 }

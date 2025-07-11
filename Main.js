@@ -523,59 +523,14 @@ function checkUtilizationOnly() {
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
 
-  ui.createMenu("🗺️ Geographic-First Planner")
+  ui.createMenu("🗺️ Geographic Route Planner")
     .addItem("📅 Generate Monthly Plan", "generateMonthlyPlan")
     .addSeparator()
     .addItem("📊 Check Utilization", "checkUtilizationOnly")
     .addItem("🔍 Analyze Store Distribution", "analyzeStoreDistribution")
-    .addSeparator()
-    .addItem("🗺️ Test Geographic Sorting", "testGeographicSorting")
-    .addItem("📋 Test Sequential Distribution", "testSequentialDistribution")
-    .addItem("⚡ Test Full Algorithm", "testFullGeographicAlgorithm")
-    .addSeparator()
-    .addItem("🏬 Test Mall Detection", "testMallDetection")
     .addToUi();
 
-  Utils.log("Geographic-First Route Planner menu created successfully", "INFO");
-}
-
-function onOpen_Alternative() {
-  try {
-    SpreadsheetApp.getActiveSpreadsheet().addMenu(
-      "🗺️ Geographic-First Planner",
-      [
-        {
-          name: "📅 Generate Monthly Plan",
-          functionName: "generateMonthlyPlan",
-        },
-        null,
-        { name: "📊 Check Utilization", functionName: "checkUtilizationOnly" },
-        {
-          name: "🔍 Analyze Store Distribution",
-          functionName: "analyzeStoreDistribution",
-        },
-        null,
-        {
-          name: "🗺️ Test Geographic Sorting",
-          functionName: "testGeographicSorting",
-        },
-        {
-          name: "📋 Test Sequential Distribution",
-          functionName: "testSequentialDistribution",
-        },
-        {
-          name: "⚡ Test Full Algorithm",
-          functionName: "testFullGeographicAlgorithm",
-        },
-        null,
-        { name: "🏬 Test Mall Detection", functionName: "testMallDetection" },
-      ]
-    );
-
-    console.log("Geographic-First menu created using alternative method");
-  } catch (error) {
-    console.error("Error creating menu:", error);
-  }
+  Utils.log("Geographic Route Planner menu created successfully", "INFO");
 }
 
 function forceCreateMenu() {

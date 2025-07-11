@@ -6,7 +6,7 @@ const CONFIG = {
   FRIDAY_PRAYER: { START: 11 * 60 + 30, END: 13 * 60 }, // 11:30 AM to 1:00 PM
   WORK: { START: 9 * 60, END: 18 * 60 + 20 },
   DEFAULT_VISIT_TIME: 30,
-  MAPS_API_KEY: "API_KEY_HERE", // Replace with your actual API key
+  MAPS_API_KEY: "", // Replace with your actual API key
 
   CLUSTERING: {
     MAX_RADIUS: 18, // Regional clustering radius (km)
