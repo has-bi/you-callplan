@@ -3,7 +3,7 @@ const CONFIG = {
   SHEET_NAME: "Callplan MY",
   BUFFER_TIME: 5,
   LUNCH: { START: 12 * 60, END: 13 * 60 },
-  FRIDAY_PRAYER: { START: 11 * 60 + 30, END: 13 * 60 }, // 11:30 AM to 1:00 PM
+  FRIDAY_PRAYER: { START: 11 * 60 + 30, END: 13 * 60 },
   WORK: { START: 9 * 60, END: 18 * 60 + 20 },
   DEFAULT_VISIT_TIME: 30,
   MAPS_API_KEY: "", // Replace with your actual API key
@@ -12,19 +12,21 @@ const CONFIG = {
     MAX_RADIUS: 18, // Regional clustering radius (km)
     MIN_STORES_PER_DAY: 6,
     MAX_STORES_PER_DAY: 15,
+    TARGET_STORES_PER_DAY: 12, // NEW: Target for balanced distribution
 
-    // NEW: Mall-based clustering
+    // Enhanced mall detection
     MALL_DETECTION: {
       PROXIMITY_THRESHOLD: 0.2, // 200 meters for same mall/building
-      MAX_STORES_PER_MALL: 3, // Max stores to visit in same mall
+      MAX_STORES_PER_MALL: 3,
       ENABLE_MALL_CLUSTERING: true,
     },
 
-    // NEW: Scoring weights for clustering decisions
-    SCORING_WEIGHTS: {
-      DISTANCE: 3.0, // Distance proximity bonus
-      MALL_BONUS: 2.0, // Same mall/location bonus
-      PRIORITY: 1.0, // Priority level bonus
+    // NEW: Geographic optimization settings
+    GEOGRAPHIC: {
+      GRID_SIZE: 0.01, // ~1.1km grid cells for spatial indexing
+      CLUSTERING_METHOD: "KMEANS", // KMEANS or DBSCAN
+      OPTIMIZE_ROUTES: true, // Enable 2-opt optimization
+      BALANCE_LOAD: true, // Enable load balancing across days
     },
   },
 
@@ -43,9 +45,17 @@ const CONFIG = {
 
   // Fractional visit frequency settings
   FRACTIONAL_VISITS: {
-    MIN_FREQUENCY: 0.1, // Minimum 0.1 = once every 10 months
-    ROUNDING_METHOD: "PROBABILITY", // 'PROBABILITY' or 'DETERMINISTIC'
-    SEED_MULTIPLIER: 1000, // For consistent randomization
+    MIN_FREQUENCY: 0.1,
+    ROUNDING_METHOD: "PROBABILITY",
+    SEED_MULTIPLIER: 1000,
+  },
+
+  // NEW: Travel constraints
+  TRAVEL_LIMITS: {
+    MAX_DISTANCE_FROM_HOME: 40, // Maximum 40km from home base
+    MAX_DAILY_DISTANCE: 150, // Maximum 150km travel per day
+    AVG_SPEED_CITY: 20, // 20 km/h in city
+    AVG_SPEED_HIGHWAY: 60, // 60 km/h on highway
   },
 };
 
