@@ -1,11 +1,387 @@
-// ==================== ENHANCED OUTPUT MANAGER - DAY-BY-DAY RESULTS ====================
+// ==================== ENHANCED OUTPUT MANAGER - CLEAN VERSION ====================
 class OutputManager {
   constructor(ss) {
     this.ss = ss;
     this.dateCalculator = new DateCalculator();
   }
 
+  // ==================== MAIN SHEET CREATION METHODS ====================
+
+  createEnhancedSheet(planResult, utilConfig, allStores) {
+    const sheetName = this.generateSheetName("Enhanced MY Callplan");
+    const sheet = this.createOrClearSheet(sheetName);
+
+    this.writeEnhancedContent(sheet, planResult, utilConfig);
+    this.formatEnhancedSheet(sheet);
+  }
+
   createSheet(planResult, utilConfig, allStores) {
+    const sheetName = this.generateSheetName("MY Callplan");
+    const sheet = this.createOrClearSheet(sheetName);
+
+    this.writeContent(sheet, planResult, utilConfig);
+    this.formatStandardSheet(sheet);
+  }
+
+  // ==================== CONTENT WRITING METHODS ====================
+
+  writeEnhancedContent(sheet, planResult, utilConfig) {
+    const {
+      workingDays,
+      unvisitedStores,
+      statistics,
+      p1VisitFrequency,
+      hasW5,
+      gridAnalysis,
+      performance,
+    } = planResult;
+
+    let row = this.writeEnhancedHeader(sheet);
+    row = this.writeEnhancedSummary(
+      sheet,
+      row,
+      statistics,
+      utilConfig,
+      p1VisitFrequency,
+      hasW5,
+      gridAnalysis,
+      performance
+    );
+    row = this.writeEnhancedWeeklyRoutes(sheet, row, workingDays);
+    this.writeUnvisitedStores(sheet, row, unvisitedStores);
+  }
+
+  writeContent(sheet, planResult, utilConfig) {
+    const {
+      workingDays,
+      unvisitedStores,
+      statistics,
+      p1VisitFrequency,
+      hasW5,
+    } = planResult;
+
+    let row = this.writeHeader(sheet);
+    row = this.writeSummary(
+      sheet,
+      row,
+      statistics,
+      utilConfig,
+      p1VisitFrequency,
+      hasW5
+    );
+    row = this.writeWeeklyRoutes(sheet, row, workingDays);
+    this.writeUnvisitedStores(sheet, row, unvisitedStores);
+  }
+
+  // ==================== HEADER METHODS ====================
+
+  writeEnhancedHeader(sheet) {
+    sheet
+      .getRange(1, 1)
+      .setValue(
+        "ENHANCED MONTHLY ROUTE PLAN - CROSS-BORDER GRID OPTIMIZATION v2.0"
+      )
+      .setFontSize(16)
+      .setFontWeight("bold")
+      .setBackground("#1976d2")
+      .setFontColor("white");
+
+    sheet.getRange(1, 10).setValue(new Date().toLocaleString("en-MY"));
+    return 3;
+  }
+
+  writeHeader(sheet) {
+    sheet
+      .getRange(1, 1)
+      .setValue("MONTHLY ROUTE PLAN - GEOGRAPHIC OPTIMIZATION")
+      .setFontSize(16)
+      .setFontWeight("bold");
+
+    sheet.getRange(1, 9).setValue(new Date().toLocaleString("en-MY"));
+    return 3;
+  }
+
+  // ==================== SUMMARY METHODS ====================
+
+  writeEnhancedSummary(
+    sheet,
+    row,
+    statistics,
+    utilConfig,
+    p1VisitFrequency,
+    hasW5,
+    gridAnalysis,
+    performance
+  ) {
+    const summaryData = this.buildEnhancedSummaryData(
+      statistics,
+      utilConfig,
+      p1VisitFrequency,
+      hasW5,
+      gridAnalysis,
+      performance
+    );
+
+    this.writeSectionHeader(sheet, row, "EXECUTIVE SUMMARY", "#e3f2fd");
+    sheet.getRange(row + 1, 1, summaryData.length, 2).setValues(summaryData);
+
+    return row + summaryData.length + 3;
+  }
+
+  writeSummary(sheet, row, statistics, utilConfig, p1VisitFrequency, hasW5) {
+    const summaryData = this.buildStandardSummaryData(
+      statistics,
+      utilConfig,
+      p1VisitFrequency,
+      hasW5
+    );
+
+    this.writeSectionHeader(sheet, row, "EXECUTIVE SUMMARY", "#e3f2fd");
+    sheet.getRange(row + 1, 1, summaryData.length, 2).setValues(summaryData);
+
+    return row + summaryData.length + 3;
+  }
+
+  // ==================== WEEKLY ROUTES METHODS ====================
+
+  writeEnhancedWeeklyRoutes(sheet, row, workingDays) {
+    workingDays.forEach((week, weekIdx) => {
+      row = this.writeEnhancedWeekHeader(sheet, row, week, weekIdx);
+      row = this.writeWeekDays(sheet, row, week, true); // true = enhanced mode
+      row++;
+    });
+    return row;
+  }
+
+  writeWeeklyRoutes(sheet, row, workingDays) {
+    workingDays.forEach((week, weekIdx) => {
+      row = this.writeWeekHeader(sheet, row, week, weekIdx);
+      row = this.writeWeekDays(sheet, row, week, false); // false = standard mode
+      row++;
+    });
+    return row;
+  }
+
+  writeWeekDays(sheet, row, week, isEnhanced) {
+    week.forEach((dayInfo) => {
+      if (dayInfo.optimizedStores && dayInfo.optimizedStores.length > 0) {
+        row = isEnhanced
+          ? this.writeEnhancedDayRoute(
+              sheet,
+              row,
+              dayInfo.optimizedStores,
+              dayInfo
+            )
+          : this.writeDayRoute(sheet, row, dayInfo.optimizedStores, dayInfo);
+      } else {
+        row = this.writeEmptyDay(sheet, row, dayInfo);
+      }
+    });
+    return row;
+  }
+
+  // ==================== WEEK HEADER METHODS ====================
+
+  writeEnhancedWeekHeader(sheet, row, week, weekIdx) {
+    const weekStats = this.calculateWeekStats(week);
+
+    this.writeSectionHeader(sheet, row, `WEEK ${weekIdx + 1}`, "#e8f5e9");
+
+    const weekSummary = `${
+      weekStats.stores
+    } visits, ${weekStats.distance.toFixed(1)} km | ${
+      weekStats.activeDays
+    }/5 days, ${weekStats.utilization}% avg utilization`;
+
+    sheet.getRange(row, 7).setValue(weekSummary).setFontSize(11);
+    return row + 2;
+  }
+
+  writeWeekHeader(sheet, row, week, weekIdx) {
+    const weekStats = this.calculateWeekStats(week);
+    const multiVisitStores = this.countMultiVisitStores(week);
+
+    this.writeSectionHeader(sheet, row, `WEEK ${weekIdx + 1}`, "#e8f5e9");
+
+    const weekSummary = `${
+      weekStats.stores
+    } visits, ${weekStats.distance.toFixed(1)} km | ${
+      weekStats.activeDays
+    }/5 days used`;
+
+    sheet.getRange(row, 7).setValue(weekSummary).setFontSize(11);
+
+    if (multiVisitStores > 0) {
+      row++;
+      sheet
+        .getRange(row, 7)
+        .setValue(`Multi-visit stores: ${multiVisitStores}`)
+        .setFontStyle("italic")
+        .setFontSize(9)
+        .setFontColor("#d32f2f");
+    }
+
+    return row + 2;
+  }
+
+  // ==================== DAY ROUTE METHODS ====================
+
+  writeEnhancedDayRoute(sheet, row, day, dayInfo) {
+    const dayStats = this.calculateDayStats(day);
+    const utilization = dayInfo.utilization || day.length / 13;
+
+    // Write day header (without cross-border info display)
+    row = this.writeDayHeader(sheet, row, dayInfo, dayStats, utilization, true);
+
+    // Write store details (standard mode - no grid info or type columns)
+    return this.writeStoreDetails(sheet, row, day, false);
+  }
+
+  writeDayRoute(sheet, row, day, dayInfo) {
+    const dayStats = this.calculateDayStats(day);
+    const multiVisitStores = day.filter((store) => store.isMultiVisit);
+
+    // Write day header
+    row = this.writeDayHeader(sheet, row, dayInfo, dayStats, null, false);
+
+    // Write additional info for standard mode
+    if (dayStats.retailerSummary) {
+      sheet
+        .getRange(row - 1, 8)
+        .setValue("Retailers: " + dayStats.retailerSummary)
+        .setFontStyle("italic")
+        .setFontSize(9);
+    }
+
+    if (multiVisitStores.length > 0) {
+      sheet
+        .getRange(row - 1, 9)
+        .setValue(`${multiVisitStores.length} multi-visit`)
+        .setFontStyle("italic")
+        .setFontSize(9)
+        .setBackground("#ffe0b2");
+    }
+
+    // Write store details
+    return this.writeStoreDetails(sheet, row, day, false);
+  }
+
+  writeDayHeader(sheet, row, dayInfo, dayStats, utilization, isEnhanced) {
+    const dayName =
+      dayInfo.dayName + " - " + this.dateCalculator.formatDate(dayInfo.date);
+
+    sheet
+      .getRange(row, 1)
+      .setValue(dayName)
+      .setFontWeight("bold")
+      .setBackground("#f5f5f5");
+
+    sheet.getRange(row, 3).setValue(dayStats.storeCount + " stores");
+    sheet.getRange(row, 4).setValue(dayStats.distance.toFixed(1) + " km");
+    sheet.getRange(row, 5).setValue(Math.round(dayStats.duration) + " min");
+    sheet
+      .getRange(row, 6)
+      .setValue("Districts: " + dayStats.districts.join(", "))
+      .setFontStyle("italic");
+
+    // Enhanced mode utilization with color coding
+    if (isEnhanced && utilization !== null) {
+      this.setUtilizationDisplay(
+        sheet,
+        row,
+        utilization,
+        dayStats.hasTimeViolations
+      );
+    }
+
+    return row + 1;
+  }
+
+  writeStoreDetails(sheet, row, day, isEnhanced) {
+    const headers = [
+      "#",
+      "No.Str",
+      "Store Name",
+      "Retailer",
+      "District",
+      "Priority",
+      "Navigation",
+      "Arrival",
+      "Depart",
+      "Distance",
+      "Travel",
+      "Visit Info",
+    ];
+
+    sheet
+      .getRange(row, 1, 1, headers.length)
+      .setValues([headers])
+      .setFontWeight("bold")
+      .setFontSize(10);
+    row++;
+
+    day.forEach((store, index) => {
+      const storeData = this.buildStoreRowData(store, index, day, isEnhanced);
+      sheet.getRange(row, 1, 1, storeData.length).setValues([storeData]);
+      this.applyStoreRowFormatting(sheet, row, store, storeData.length);
+      row++;
+    });
+
+    return row + 1;
+  }
+
+  writeEmptyDay(sheet, row, dayInfo) {
+    const dayName =
+      dayInfo.dayName + " - " + this.dateCalculator.formatDate(dayInfo.date);
+
+    sheet
+      .getRange(row, 1)
+      .setValue(dayName)
+      .setFontWeight("bold")
+      .setBackground("#ffcdd2");
+
+    sheet
+      .getRange(row, 3)
+      .setValue("❌ NO STORES SCHEDULED")
+      .setFontStyle("italic")
+      .setFontWeight("bold")
+      .setFontColor("#d32f2f");
+
+    return row + 2;
+  }
+
+  // ==================== UNVISITED STORES METHOD ====================
+
+  writeUnvisitedStores(sheet, row, unvisitedStores) {
+    if (!unvisitedStores || !unvisitedStores.length) return;
+
+    row++;
+    this.writeSectionHeader(
+      sheet,
+      row,
+      "STORES NOT COVERED THIS MONTH",
+      "#ffcdd2"
+    );
+    row++;
+
+    const categorized = this.categorizeUnvisitedStores(unvisitedStores);
+
+    sheet
+      .getRange(row, 1)
+      .setValue(
+        `Total: ${unvisitedStores.length} stores not scheduled (${categorized.fractional.length} fractional, ${categorized.regular.length} regular, ${categorized.multiVisit.length} multi-visit)`
+      )
+      .setFontColor("#d32f2f");
+    row += 2;
+
+    row = this.writeUnvisitedReasons(sheet, row);
+    row = this.writeUnvisitedByCategory(sheet, row, categorized);
+    this.writeUnvisitedDetails(sheet, row, categorized.regular);
+  }
+
+  // ==================== HELPER METHODS ====================
+
+  generateSheetName(prefix) {
     const currentDate = new Date();
     const monthNames = [
       "January",
@@ -21,8 +397,10 @@ class OutputManager {
       "November",
       "December",
     ];
-    const sheetName = `MY Callplan - ${monthNames[currentDate.getMonth()]}`;
+    return `${prefix} - ${monthNames[currentDate.getMonth()]}`;
+  }
 
+  createOrClearSheet(sheetName) {
     let sheet;
     try {
       sheet = this.ss.insertSheet(sheetName);
@@ -32,201 +410,262 @@ class OutputManager {
       sheet.clear();
       Utils.log("Cleared existing sheet: " + sheetName, "INFO");
     }
+    return sheet;
+  }
 
-    this.writeContent(sheet, planResult, utilConfig);
-    sheet.autoResizeColumns(1, 13); // Extended for day-by-day info
+  formatEnhancedSheet(sheet) {
+    sheet.autoResizeColumns(1, 12);
     sheet.setColumnWidth(3, 200);
     sheet.setColumnWidth(4, 150);
     sheet.setColumnWidth(7, 200);
-    sheet.setColumnWidth(12, 180); // Mall info column
-    sheet.setColumnWidth(13, 120); // Multi-visit info column
   }
 
-  writeContent(
-    sheet,
-    { workingDays, unvisitedStores, statistics, p1VisitFrequency, hasW5 },
-    utilConfig
+  formatStandardSheet(sheet) {
+    sheet.autoResizeColumns(1, 12);
+    sheet.setColumnWidth(3, 200);
+    sheet.setColumnWidth(4, 150);
+    sheet.setColumnWidth(7, 200);
+  }
+
+  writeSectionHeader(sheet, row, title, backgroundColor) {
+    sheet
+      .getRange(row, 1)
+      .setValue(title)
+      .setFontSize(14)
+      .setFontWeight("bold")
+      .setBackground(backgroundColor);
+  }
+
+  setUtilizationDisplay(sheet, row, utilization, hasTimeViolations) {
+    const utilizationText = Math.round(utilization * 100) + "% capacity";
+    const utilizationRange = sheet.getRange(row, 7);
+    utilizationRange.setValue(utilizationText);
+
+    if (hasTimeViolations) {
+      utilizationRange.setBackground("#f44336").setFontColor("white");
+    } else if (utilization >= 0.95) {
+      utilizationRange.setBackground("#4caf50").setFontColor("white");
+    } else if (utilization >= 0.8) {
+      utilizationRange.setBackground("#8bc34a");
+    } else if (utilization >= 0.6) {
+      utilizationRange.setBackground("#ffeb3b");
+    } else {
+      utilizationRange.setBackground("#ff9800").setFontColor("white");
+    }
+  }
+
+  applyStoreRowFormatting(sheet, row, store, columnCount) {
+    if (store.isAfter6PM || store.timeWarning) {
+      sheet
+        .getRange(row, 1, 1, columnCount)
+        .setBackground("#ffcdd2")
+        .setFontColor("#d32f2f");
+    } else if (store.isFractionalVisit) {
+      sheet.getRange(row, 1, 1, columnCount).setBackground("#fff3e0");
+    } else if (store.isMultiVisit) {
+      sheet.getRange(row, 1, 1, columnCount).setBackground("#ffe0b2");
+    } else if (store.mallClusterId) {
+      sheet.getRange(row, 1, 1, columnCount).setBackground("#e8f5e9");
+    }
+  }
+
+  // ==================== DATA CALCULATION METHODS ====================
+
+  buildEnhancedSummaryData(
+    statistics,
+    utilConfig,
+    p1VisitFrequency,
+    hasW5,
+    gridAnalysis,
+    performance
   ) {
-    let row = this.writeHeader(sheet);
-    row = this.writeSummary(
-      sheet,
-      row,
+    const baseData = this.buildBaseSummaryData(
       statistics,
       utilConfig,
       p1VisitFrequency,
       hasW5
     );
-    row = this.writeWeeklyRoutes(sheet, row, workingDays);
-    this.writeUnvisitedStores(sheet, row, unvisitedStores);
+
+    // Only add geographic optimization if no cross-border optimization
+    if (
+      statistics.geographicOptimization &&
+      !statistics.crossBorderOptimization
+    ) {
+      baseData.push(
+        ...this.buildGeographicOptimizationData(
+          statistics.geographicOptimization
+        )
+      );
+    }
+
+    return baseData;
   }
 
-  writeHeader(sheet) {
-    sheet
-      .getRange(1, 1)
-      .setValue("MONTHLY ROUTE PLAN - DAY-BY-DAY OPTIMIZATION WITH 14-DAY GAPS")
-      .setFontSize(16)
-      .setFontWeight("bold");
-    sheet.getRange(1, 9).setValue(new Date().toLocaleString("en-MY"));
-    return 3;
+  buildStandardSummaryData(statistics, utilConfig, p1VisitFrequency, hasW5) {
+    const baseData = this.buildBaseSummaryData(
+      statistics,
+      utilConfig,
+      p1VisitFrequency,
+      hasW5
+    );
+
+    if (statistics.twoPhaseOptimization) {
+      baseData.push(...this.buildTwoPhaseData(statistics.twoPhaseOptimization));
+    }
+
+    if (statistics.multiVisitGaps) {
+      baseData.push(...this.buildMultiVisitData(statistics.multiVisitGaps));
+    }
+
+    if (statistics.mallStats) {
+      baseData.push(...this.buildMallStatsData(statistics.mallStats));
+    }
+
+    if (statistics.retailerCounts) {
+      baseData.push(...this.buildRetailerData(statistics.retailerCounts));
+    }
+
+    return baseData;
   }
 
-  writeSummary(sheet, row, statistics, utilConfig, p1VisitFrequency, hasW5) {
-    sheet
-      .getRange(row, 1)
-      .setValue("EXECUTIVE SUMMARY")
-      .setFontSize(14)
-      .setFontWeight("bold")
-      .setBackground("#e3f2fd");
-    row++;
-
-    const summaryData = [
+  buildBaseSummaryData(statistics, utilConfig, p1VisitFrequency, hasW5) {
+    return [
       ["Total Stores to Visit:", statistics.totalStoresRequired],
       ["Stores Planned:", statistics.totalStoresPlanned],
       ["Coverage:", statistics.coveragePercentage + "%"],
-      ["Working Weeks Used:", hasW5 ? "5 (Including W5)" : "4"],
-      [
-        "Working Days Used:",
-        statistics.workingDays +
-          "/" +
-          (statistics.twoPhaseOptimization
-            ? statistics.twoPhaseOptimization.totalDays
-            : "22"),
-      ],
+      ["Working Days Used:", statistics.workingDays],
       ["Average Stores/Day:", statistics.averageStoresPerDay],
-      ["Total Distance:", statistics.totalDistance.toFixed(1) + " km"],
+      ["Total Distance:", statistics.totalDistance + " km"],
       ["Selected Priorities:", utilConfig.includePriorities.join(", ")],
       ["P1 Visit Frequency:", Utils.formatFrequency(p1VisitFrequency)],
       ["Utilization:", utilConfig.utilization.toFixed(1) + "%"],
     ];
-
-    // NEW: Two-phase optimization results
-    if (statistics.twoPhaseOptimization) {
-      summaryData.push(["", ""]); // Empty row
-      summaryData.push(["TWO-PHASE OPTIMIZATION:", ""]);
-      summaryData.push([
-        "Max Stores/Day:",
-        statistics.twoPhaseOptimization.maxStoresPerDay,
-      ]);
-      summaryData.push([
-        "Min Stores/Day:",
-        statistics.twoPhaseOptimization.minStoresPerDay,
-      ]);
-      summaryData.push([
-        "Empty Days:",
-        statistics.twoPhaseOptimization.emptyDays,
-      ]);
-      summaryData.push([
-        "Day Utilization:",
-        statistics.twoPhaseOptimization.utilizationRate + "%",
-      ]);
-      summaryData.push([
-        "Balance Score:",
-        statistics.twoPhaseOptimization.balanceScore +
-          "% (higher = more balanced)",
-      ]);
-      summaryData.push([
-        "Phase 1:",
-        statistics.twoPhaseOptimization.phase1_AggressiveAssignment,
-      ]);
-      summaryData.push([
-        "Phase 2:",
-        statistics.twoPhaseOptimization.phase2_MultiVisitRebalancing,
-      ]);
-      summaryData.push([
-        "Phase 3:",
-        statistics.twoPhaseOptimization.phase3_FineTuning,
-      ]);
-    }
-
-    // Multi-visit gap compliance
-    if (statistics.multiVisitGaps) {
-      summaryData.push(["", ""]); // Empty row
-      summaryData.push(["MULTI-VISIT GAP COMPLIANCE:", ""]);
-      summaryData.push([
-        "Multi-visit Stores:",
-        statistics.multiVisitGaps.totalMultiVisitStores,
-      ]);
-      summaryData.push([
-        "14-Day Gap Compliance:",
-        statistics.multiVisitGaps.gapCompliance + "%",
-      ]);
-      summaryData.push([
-        "Valid Gaps:",
-        statistics.multiVisitGaps.validGaps +
-          "/" +
-          statistics.multiVisitGaps.totalGaps,
-      ]);
-    }
-
-    // Mall clustering statistics
-    if (statistics.mallStats) {
-      summaryData.push(["", ""]); // Empty row
-      summaryData.push(["MALL CLUSTERING RESULTS:", ""]);
-      summaryData.push([
-        "Mall Clusters Detected:",
-        statistics.mallStats.totalMallClusters,
-      ]);
-      summaryData.push([
-        "Stores in Mall Clusters:",
-        statistics.mallStats.storesInMalls,
-      ]);
-      summaryData.push([
-        "Average Stores per Mall:",
-        statistics.mallStats.avgStoresPerMall,
-      ]);
-      summaryData.push([
-        "Mall Clustering Efficiency:",
-        statistics.mallStats.clusteringEfficiency + "%",
-      ]);
-      summaryData.push([
-        "Travel Time Savings:",
-        statistics.mallStats.timeSavings + " minutes",
-      ]);
-    }
-
-    // Retailer breakdown
-    if (statistics.retailerCounts) {
-      summaryData.push(["", ""]); // Empty row
-      summaryData.push(["RETAILER BREAKDOWN:", ""]);
-      Object.entries(statistics.retailerCounts).forEach(([retailer, count]) => {
-        summaryData.push([`${retailer}:`, count + " stores"]);
-      });
-    }
-
-    sheet.getRange(row, 1, summaryData.length, 2).setValues(summaryData);
-    return row + summaryData.length + 2;
   }
 
-  writeWeeklyRoutes(sheet, row, workingDays) {
-    workingDays.forEach((week, weekIdx) => {
-      row = this.writeWeekHeader(sheet, row, week, weekIdx);
+  buildCrossBorderData(crossBorderStats, performance) {
+    const data = [
+      ["", ""],
+      ["CROSS-BORDER OPTIMIZATION RESULTS:", ""],
+      ["Algorithm:", "Grid-Based Cross-Border System"],
+      ["Efficiency Gain:", crossBorderStats.efficiencyGain],
+      ["Average Utilization:", crossBorderStats.avgUtilization],
+      ["Cross-Border Days:", crossBorderStats.crossBorderDays],
+      ["Days Reduction:", crossBorderStats.daysReduction],
+    ];
 
-      week.forEach((dayInfo) => {
-        if (dayInfo.optimizedStores && dayInfo.optimizedStores.length > 0) {
-          row = this.writeDayRoute(
-            sheet,
-            row,
-            dayInfo.optimizedStores,
-            dayInfo
-          );
-        } else {
-          row = this.writeEmptyDay(sheet, row, dayInfo);
-        }
-      });
+    if (performance && performance.timeComplianceRate !== undefined) {
+      data.push([
+        "Time Compliance Rate:",
+        performance.timeComplianceRate + "% (end by 6:20 PM)",
+      ]);
+      if (performance.averageEndTime) {
+        data.push([
+          "Average End Time:",
+          Utils.formatTime(performance.averageEndTime),
+        ]);
+      }
+    }
 
-      row++;
+    data.push(
+      ["", ""],
+      ["GRID ANALYSIS (BEFORE):", ""],
+      [
+        "Underutilized Grids:",
+        crossBorderStats.beforeOptimization.underutilized,
+      ],
+      ["Optimal Grids:", crossBorderStats.beforeOptimization.optimal],
+      ["Overloaded Grids:", crossBorderStats.beforeOptimization.overloaded],
+      ["", ""],
+      ["OPTIMIZATION BREAKDOWN:", ""],
+      ["Standalone Days:", crossBorderStats.afterOptimization.standaloneDays],
+      [
+        "Cross-Border Days:",
+        crossBorderStats.afterOptimization.crossBorderDays,
+      ],
+      ["Split Days:", crossBorderStats.afterOptimization.splitDays]
+    );
+
+    return data;
+  }
+
+  buildBusinessImpactData(businessImpact) {
+    return [
+      ["", ""],
+      ["BUSINESS IMPACT:", ""],
+      ["Travel Days Saved:", businessImpact.travelDaysReduced + " days/month"],
+      ["Utilization Improvement:", businessImpact.utilizationImprovement],
+      ["Monthly Cost Savings:", businessImpact.estimatedCostSavings.monthly],
+      ["Annual Cost Savings:", businessImpact.estimatedCostSavings.annual],
+      ["Time Savings per Week:", businessImpact.timeSavingsPerWeek],
+    ];
+  }
+
+  buildGeographicOptimizationData(geoOptimization) {
+    return [
+      ["", ""],
+      ["GEOGRAPHIC OPTIMIZATION:", ""],
+      ["Algorithm:", geoOptimization.algorithm],
+      ["Balance Score:", geoOptimization.balanceScore + "%"],
+      ["Day Utilization:", geoOptimization.utilizationRate + "%"],
+      ["Empty Days:", geoOptimization.emptyDays],
+    ];
+  }
+
+  buildTwoPhaseData(twoPhase) {
+    return [
+      ["", ""],
+      ["TWO-PHASE OPTIMIZATION:", ""],
+      ["Max Stores/Day:", twoPhase.maxStoresPerDay],
+      ["Min Stores/Day:", twoPhase.minStoresPerDay],
+      ["Empty Days:", twoPhase.emptyDays],
+      ["Day Utilization:", twoPhase.utilizationRate + "%"],
+      ["Balance Score:", twoPhase.balanceScore + "% (higher = more balanced)"],
+      ["Phase 1:", twoPhase.phase1_AggressiveAssignment],
+      ["Phase 2:", twoPhase.phase2_MultiVisitRebalancing],
+      ["Phase 3:", twoPhase.phase3_FineTuning],
+    ];
+  }
+
+  buildMultiVisitData(multiVisit) {
+    return [
+      ["", ""],
+      ["MULTI-VISIT GAP COMPLIANCE:", ""],
+      ["Multi-visit Stores:", multiVisit.totalMultiVisitStores],
+      ["7-Day Gap Compliance:", multiVisit.gapCompliance + "%"],
+      ["Valid Gaps:", multiVisit.validGaps + "/" + multiVisit.totalGaps],
+    ];
+  }
+
+  buildMallStatsData(mallStats) {
+    return [
+      ["", ""],
+      ["MALL CLUSTERING RESULTS:", ""],
+      ["Mall Clusters Detected:", mallStats.totalMallClusters],
+      ["Stores in Mall Clusters:", mallStats.storesInMalls],
+      ["Average Stores per Mall:", mallStats.avgStoresPerMall],
+      ["Mall Clustering Efficiency:", mallStats.clusteringEfficiency + "%"],
+      ["Travel Time Savings:", mallStats.timeSavings + " minutes"],
+    ];
+  }
+
+  buildRetailerData(retailerCounts) {
+    const data = [
+      ["", ""],
+      ["RETAILER BREAKDOWN:", ""],
+    ];
+    Object.entries(retailerCounts).forEach(([retailer, count]) => {
+      data.push([`${retailer}:`, count + " stores"]);
     });
-
-    return row;
+    return data;
   }
 
-  writeWeekHeader(sheet, row, week, weekIdx) {
-    const weekStores = week.reduce(
+  calculateWeekStats(week) {
+    const stores = week.reduce(
       (sum, dayInfo) =>
         sum + (dayInfo.optimizedStores ? dayInfo.optimizedStores.length : 0),
       0
     );
-    const weekDistance = week.reduce((sum, dayInfo) => {
+    const distance = week.reduce((sum, dayInfo) => {
       if (dayInfo.optimizedStores) {
         return (
           sum +
@@ -238,9 +677,58 @@ class OutputManager {
       }
       return sum;
     }, 0);
+    const activeDays = week.filter(
+      (dayInfo) => dayInfo.optimizedStores && dayInfo.optimizedStores.length > 0
+    ).length;
+    const utilization =
+      activeDays > 0 ? Math.round((stores / (activeDays * 13)) * 100) : 0;
 
-    // Multi-visit stores in this week
-    const multiVisitStores = week.reduce((sum, dayInfo) => {
+    return { stores, distance, activeDays, utilization };
+  }
+
+  calculateDayStats(day) {
+    const storeCount = day.length;
+    const distance = day.reduce((sum, store) => sum + (store.distance || 0), 0);
+    const duration = day.reduce(
+      (sum, store) =>
+        sum + (store.duration || 0) + CONFIG.BUFFER_TIME + store.visitTime,
+      0
+    );
+    const districts = [...new Set(day.map((s) => s.district))];
+    const hasTimeViolations = day.some(
+      (store) => store.isAfter6PM || store.timeWarning
+    );
+
+    const retailerCounts = {};
+    day.forEach((store) => {
+      const retailer = this.normalizeRetailerName(store.retailer);
+      retailerCounts[retailer] = (retailerCounts[retailer] || 0) + 1;
+    });
+
+    const retailerSummary = Object.entries(retailerCounts)
+      .filter(([retailer, count]) => count > 0)
+      .sort(([, a], [, b]) => b - a)
+      .map(([retailer, count]) => `${retailer}: ${count}`)
+      .join(", ");
+
+    return {
+      storeCount,
+      distance,
+      duration,
+      districts,
+      hasTimeViolations,
+      retailerSummary,
+    };
+  }
+
+  countCrossBorderDays(week) {
+    return week.filter(
+      (dayInfo) => dayInfo.crossBorderInfo && dayInfo.crossBorderInfo.count > 0
+    ).length;
+  }
+
+  countMultiVisitStores(week) {
+    return week.reduce((sum, dayInfo) => {
       if (dayInfo.optimizedStores) {
         return (
           sum +
@@ -249,48 +737,6 @@ class OutputManager {
       }
       return sum;
     }, 0);
-
-    // Mall statistics for the week
-    const weekMallStats = this.calculateWeekMallStats(week);
-    const mallSummary =
-      weekMallStats.mallClusters > 0
-        ? ` | ${weekMallStats.mallClusters} malls (${weekMallStats.storesInMalls} stores)`
-        : "";
-
-    // Day utilization for the week
-    const activeDays = week.filter(
-      (dayInfo) => dayInfo.optimizedStores && dayInfo.optimizedStores.length > 0
-    ).length;
-    const utilizationSummary = ` | ${activeDays}/5 days used`;
-
-    sheet
-      .getRange(row, 1)
-      .setValue(`WEEK ${weekIdx + 1}`)
-      .setFontSize(14)
-      .setFontWeight("bold")
-      .setBackground("#e8f5e9");
-
-    sheet
-      .getRange(row, 7)
-      .setValue(
-        `${weekStores} visits, ${weekDistance.toFixed(
-          1
-        )} km${mallSummary}${utilizationSummary}`
-      )
-      .setFontSize(11);
-
-    // Multi-visit info
-    if (multiVisitStores > 0) {
-      row++;
-      sheet
-        .getRange(row, 7)
-        .setValue(`Multi-visit stores: ${multiVisitStores}`)
-        .setFontStyle("italic")
-        .setFontSize(9)
-        .setFontColor("#d32f2f");
-    }
-
-    return row + 2;
   }
 
   calculateWeekMallStats(week) {
@@ -317,161 +763,6 @@ class OutputManager {
         0
       ),
     };
-  }
-
-  writeDayRoute(sheet, row, day, dayInfo) {
-    const dayDistance = day.reduce(
-      (sum, store) => sum + (store.distance || 0),
-      0
-    );
-    const dayDuration = day.reduce(
-      (sum, store) =>
-        sum + (store.duration || 0) + CONFIG.BUFFER_TIME + store.visitTime,
-      0
-    );
-    const districts = [...new Set(day.map((s) => s.district))];
-
-    // Multi-visit stores in this day
-    const multiVisitStores = day.filter((store) => store.isMultiVisit);
-    const dayMallInfo = this.calculateDayMallInfo(day);
-
-    const retailerCounts = {};
-    day.forEach((store) => {
-      const retailer = this.normalizeRetailerName(store.retailer);
-      retailerCounts[retailer] = (retailerCounts[retailer] || 0) + 1;
-    });
-
-    const retailerSummary = Object.entries(retailerCounts)
-      .filter(([retailer, count]) => count > 0)
-      .sort(([, a], [, b]) => b - a)
-      .map(([retailer, count]) => `${retailer}: ${count}`)
-      .join(", ");
-
-    // Day header with enhanced info
-    sheet
-      .getRange(row, 1)
-      .setValue(
-        dayInfo.dayName + " - " + this.dateCalculator.formatDate(dayInfo.date)
-      )
-      .setFontWeight("bold")
-      .setBackground("#f5f5f5");
-    sheet.getRange(row, 3).setValue(day.length + " stores");
-    sheet.getRange(row, 4).setValue(dayDistance.toFixed(1) + " km");
-    sheet.getRange(row, 5).setValue(Math.round(dayDuration) + " min");
-    sheet
-      .getRange(row, 6)
-      .setValue("Districts: " + districts.join(", "))
-      .setFontStyle("italic");
-
-    // Add retailer breakdown
-    if (retailerSummary) {
-      sheet
-        .getRange(row, 8)
-        .setValue("Retailers: " + retailerSummary)
-        .setFontStyle("italic")
-        .setFontSize(9);
-    }
-
-    // Mall information
-    if (dayMallInfo.summary) {
-      sheet
-        .getRange(row, 12)
-        .setValue(dayMallInfo.summary)
-        .setFontStyle("italic")
-        .setFontSize(9)
-        .setBackground("#e8f5e9");
-    }
-
-    // Multi-visit information
-    if (multiVisitStores.length > 0) {
-      sheet
-        .getRange(row, 13)
-        .setValue(`${multiVisitStores.length} multi-visit`)
-        .setFontStyle("italic")
-        .setFontSize(9)
-        .setBackground("#ffe0b2");
-    }
-
-    row++;
-
-    // ENHANCED: Headers with multi-visit information
-    const headers = [
-      "#",
-      "No.Str",
-      "Store Name",
-      "Retailer",
-      "District",
-      "Priority",
-      "Navigation",
-      "Arrival",
-      "Depart",
-      "Distance",
-      "Travel",
-      "Mall Info",
-      "Visit Info",
-    ];
-    sheet
-      .getRange(row, 1, 1, headers.length)
-      .setValues([headers])
-      .setFontWeight("bold")
-      .setFontSize(10);
-    row++;
-
-    day.forEach((store, index) => {
-      const { fromLat, fromLng, linkText } = this.getNavigationInfo(day, index);
-      const mapsUrl = Utils.mapsLink(fromLat, fromLng, store.lat, store.lng);
-
-      // Mall information
-      const mallInfo = this.formatStoreMallInfo(
-        store,
-        index > 0 ? day[index - 1] : null
-      );
-
-      // Multi-visit information
-      const visitInfo = this.formatVisitInfo(store);
-
-      const storeData = [
-        store.order || index + 1,
-        store.noStr || "",
-        store.name,
-        store.retailer || "",
-        store.district,
-        store.priority,
-        '=HYPERLINK("' + mapsUrl + '", "' + linkText + '")',
-        Utils.formatTime(store.arrivalTime || 0),
-        Utils.formatTime(store.departTime || 0),
-        (store.distance || 0).toFixed(1) + " km",
-        (store.duration || 0) + " min",
-        mallInfo,
-        visitInfo,
-      ];
-
-      sheet.getRange(row, 1, 1, storeData.length).setValues([storeData]);
-
-      // Enhanced color coding
-      if (store.isFractionalVisit) {
-        sheet.getRange(row, 1, 1, storeData.length).setBackground("#fff3e0"); // Fractional visits - orange
-      } else if (store.isMultiVisit) {
-        sheet.getRange(row, 1, 1, storeData.length).setBackground("#ffe0b2"); // Multi-visit - amber
-      } else if (store.mallClusterId) {
-        sheet.getRange(row, 1, 1, storeData.length).setBackground("#e8f5e9"); // Mall visits - light green
-      }
-
-      row++;
-    });
-
-    return row + 1;
-  }
-
-  // NEW: Format visit information
-  formatVisitInfo(store) {
-    if (store.isMultiVisit) {
-      return `Visit ${store.visitNum}/${store.actualVisits || 1}`;
-    } else if (store.isFractionalVisit) {
-      return `Fractional (${(store.baseFrequency || 0).toFixed(2)})`;
-    } else {
-      return "Regular";
-    }
   }
 
   calculateDayMallInfo(day) {
@@ -502,49 +793,213 @@ class OutputManager {
       return `${info.stores.length} stores (${priorityList})`;
     });
 
-    const summary = `${mallCount} malls: ${mallSummaries.join(" | ")}`;
-
     return {
-      summary: summary,
-      mallCount: mallCount,
-      mallStores: mallStores,
+      summary: `${mallCount} malls: ${mallSummaries.join(" | ")}`,
+      mallCount,
+      mallStores,
       details: mallClusters,
     };
   }
 
-  formatStoreMallInfo(store, previousStore) {
-    if (!store.mallClusterId) {
-      return "Individual";
-    }
+  buildStoreRowData(store, index, day, isEnhanced) {
+    const { fromLat, fromLng, linkText } = this.getNavigationInfo(day, index);
+    const mapsUrl = Utils.mapsLink(fromLat, fromLng, store.lat, store.lng);
 
-    const mallInfo = store.mallClusterInfo || {};
-    let info = `Mall (${mallInfo.storeCount || "?"} stores)`;
-
-    if (previousStore && previousStore.mallClusterId === store.mallClusterId) {
-      info += " - Walk";
-    } else if (store.mallClusterId) {
-      info += " - Drive";
-    }
-
-    return info;
+    return [
+      store.order || index + 1,
+      store.noStr || "",
+      store.name,
+      store.retailer || "",
+      store.district,
+      store.priority,
+      '=HYPERLINK("' + mapsUrl + '", "' + linkText + '")',
+      Utils.formatTime(store.arrivalTime || 0),
+      Utils.formatTime(store.departTime || 0),
+      (store.distance || 0).toFixed(1) + " km",
+      (store.duration || 0) + " min",
+      this.formatVisitInfo(store),
+    ];
   }
 
-  writeEmptyDay(sheet, row, dayInfo) {
+  categorizeUnvisitedStores(unvisitedStores) {
+    return {
+      fractional: unvisitedStores.filter(
+        (s) => s.baseFrequency && s.baseFrequency < 1
+      ),
+      regular: unvisitedStores.filter(
+        (s) => !s.baseFrequency || s.baseFrequency >= 1
+      ),
+      multiVisit: unvisitedStores.filter((s) => s.isMultiVisit),
+    };
+  }
+
+  writeUnvisitedReasons(sheet, row) {
     sheet
       .getRange(row, 1)
-      .setValue(
-        dayInfo.dayName + " - " + this.dateCalculator.formatDate(dayInfo.date)
-      )
-      .setFontWeight("bold")
-      .setBackground("#ffcdd2"); // Red background for empty days
-    sheet
-      .getRange(row, 3)
-      .setValue("❌ NO STORES SCHEDULED")
-      .setFontStyle("italic")
-      .setFontWeight("bold")
-      .setFontColor("#d32f2f");
-    return row + 2;
+      .setValue("POSSIBLE REASONS FOR UNVISITED STORES:")
+      .setFontWeight("bold");
+    row++;
+
+    const reasons = [
+      "• Day capacity limits (13 stores/day max)",
+      "• Time constraints (must finish by 6:20 PM)",
+      "• Geographic clustering efficiency",
+      "• Cross-border optimization constraints",
+      "• 7-day gap requirements for multi-visit stores",
+      "• Fractional frequency probability distribution",
+    ];
+
+    reasons.forEach((reason) => {
+      sheet.getRange(row, 1).setValue(reason);
+      row++;
+    });
+
+    return row + 1;
   }
+
+  writeUnvisitedByCategory(sheet, row, categorized) {
+    // Fractional stores
+    if (categorized.fractional.length > 0) {
+      this.writeSectionHeader(
+        sheet,
+        row,
+        "FRACTIONAL FREQUENCY STORES (Expected - will appear in future months)",
+        "#fff3e0"
+      );
+      row++;
+
+      const fractionalByPriority = this.groupByPriority(categorized.fractional);
+      Object.entries(fractionalByPriority).forEach(([priority, stores]) => {
+        const frequency = stores[0]?.baseFrequency || 0;
+        sheet
+          .getRange(row, 1)
+          .setValue(
+            `${priority}: ${stores.length} stores (${Utils.formatFrequency(
+              frequency
+            )})`
+          );
+        row++;
+      });
+      row++;
+    }
+
+    // Regular stores
+    if (categorized.regular.length > 0) {
+      this.writeSectionHeader(
+        sheet,
+        row,
+        "REGULAR STORES (Could not fit in optimized schedule)",
+        "#ffcdd2"
+      );
+      row++;
+
+      const regularByPriority = this.groupByPriority(categorized.regular);
+      Object.entries(regularByPriority).forEach(([priority, stores]) => {
+        sheet.getRange(row, 1).setValue(`${priority}: ${stores.length} stores`);
+        row++;
+      });
+      row++;
+    }
+
+    return row;
+  }
+
+  writeUnvisitedDetails(sheet, row, regularUnvisited) {
+    if (regularUnvisited.length === 0) return;
+
+    const headers = [
+      "Store Name",
+      "No.Str",
+      "Retailer",
+      "District",
+      "Priority",
+      "Frequency",
+      "Address",
+      "Visit Type",
+    ];
+    sheet
+      .getRange(row, 1, 1, headers.length)
+      .setValues([headers])
+      .setFontWeight("bold");
+    row++;
+
+    const displayCount = Math.min(20, regularUnvisited.length);
+    for (let i = 0; i < displayCount; i++) {
+      const store = regularUnvisited[i];
+      const data = [
+        store.name,
+        store.noStr || "",
+        store.retailer || "",
+        store.district,
+        store.priority,
+        this.formatStoreFrequency(store),
+        this.formatAddress(store.address),
+        this.getVisitType(store),
+      ];
+
+      sheet.getRange(row, 1, 1, data.length).setValues([data]);
+      this.applyUnvisitedStoreFormatting(sheet, row, store, data.length);
+      row++;
+    }
+
+    if (regularUnvisited.length > displayCount) {
+      row++;
+      sheet
+        .getRange(row, 1)
+        .setValue(
+          `... and ${regularUnvisited.length - displayCount} more stores`
+        )
+        .setFontStyle("italic");
+    }
+  }
+
+  // ==================== FORMATTING HELPER METHODS ====================
+
+  formatOptimizationType(optimizationType) {
+    const typeText = optimizationType.replace(/_/g, " ").toLowerCase();
+    return typeText.charAt(0).toUpperCase() + typeText.slice(1);
+  }
+
+  formatStoreFrequency(store) {
+    if (store.baseFrequency) {
+      return store.baseFrequency < 1
+        ? store.baseFrequency.toFixed(2)
+        : store.baseFrequency.toString();
+    }
+    return (store.visits || 0).toString();
+  }
+
+  formatAddress(address) {
+    if (!address) return "";
+    return address.length > 40 ? address.substring(0, 40) + "..." : address;
+  }
+
+  getVisitType(store) {
+    if (store.isMultiVisit) return "Multi-visit";
+    if (store.isFractionalVisit) return "Fractional";
+    return "Regular";
+  }
+
+  applyUnvisitedStoreFormatting(sheet, row, store, columnCount) {
+    if (store.isMultiVisit) {
+      sheet.getRange(row, 1, 1, columnCount).setBackground("#ffe0b2");
+    } else {
+      sheet.getRange(row, 1, 1, columnCount).setBackground("#ffebee");
+    }
+  }
+
+  groupByPriority(stores) {
+    const grouped = {};
+    stores.forEach((store) => {
+      if (!grouped[store.priority]) {
+        grouped[store.priority] = [];
+      }
+      grouped[store.priority].push(store);
+    });
+    return grouped;
+  }
+
+  // ==================== STORE INFORMATION METHODS ====================
 
   getNavigationInfo(day, index) {
     if (index === 0) {
@@ -563,200 +1018,39 @@ class OutputManager {
     };
   }
 
-  writeUnvisitedStores(sheet, row, unvisitedStores) {
-    if (!unvisitedStores || !unvisitedStores.length) return;
-
-    row++;
-    sheet
-      .getRange(row, 1)
-      .setValue("STORES NOT COVERED THIS MONTH")
-      .setFontSize(14)
-      .setFontWeight("bold")
-      .setBackground("#ffcdd2");
-    row++;
-
-    const fractionalUnvisited = unvisitedStores.filter(
-      (s) => s.baseFrequency && s.baseFrequency < 1
-    );
-    const regularUnvisited = unvisitedStores.filter(
-      (s) => !s.baseFrequency || s.baseFrequency >= 1
-    );
-    const multiVisitUnvisited = unvisitedStores.filter((s) => s.isMultiVisit);
-
-    sheet
-      .getRange(row, 1)
-      .setValue(
-        `Total: ${unvisitedStores.length} stores not scheduled ` +
-          `(${fractionalUnvisited.length} fractional, ${regularUnvisited.length} regular, ${multiVisitUnvisited.length} multi-visit)`
-      )
-      .setFontColor("#d32f2f");
-    row += 2;
-
-    // Show why stores weren't scheduled
-    if (unvisitedStores.length > 0) {
-      sheet
-        .getRange(row, 1)
-        .setValue("POSSIBLE REASONS FOR UNVISITED STORES:")
-        .setFontWeight("bold");
-      row++;
-
-      const reasons = [
-        "• Day capacity limits (15 stores/day max)",
-        "• Time constraints (must finish by 6:20 PM)",
-        "• Geographic clustering efficiency",
-        "• 14-day gap requirements for multi-visit stores",
-        "• Fractional frequency probability distribution",
-      ];
-
-      reasons.forEach((reason) => {
-        sheet.getRange(row, 1).setValue(reason);
-        row++;
-      });
-      row++;
-    }
-
-    // Rest of unvisited stores reporting...
-    if (fractionalUnvisited.length > 0) {
-      sheet
-        .getRange(row, 1)
-        .setValue(
-          "FRACTIONAL FREQUENCY STORES (Expected - will appear in future months)"
-        )
-        .setFontWeight("bold")
-        .setBackground("#fff3e0");
-      row++;
-
-      const fractionalByPriority = {};
-      fractionalUnvisited.forEach((store) => {
-        if (!fractionalByPriority[store.priority]) {
-          fractionalByPriority[store.priority] = [];
-        }
-        fractionalByPriority[store.priority].push(store);
-      });
-
-      Object.entries(fractionalByPriority).forEach(([priority, stores]) => {
-        const frequency = stores[0]?.baseFrequency || 0;
-        sheet
-          .getRange(row, 1)
-          .setValue(
-            `${priority}: ${stores.length} stores (${Utils.formatFrequency(
-              frequency
-            )})`
-          );
-        row++;
-      });
-      row++;
-    }
-
-    if (regularUnvisited.length > 0) {
-      sheet
-        .getRange(row, 1)
-        .setValue("REGULAR STORES (Could not fit in optimized schedule)")
-        .setFontWeight("bold")
-        .setBackground("#ffcdd2");
-      row++;
-
-      const regularByPriority = {};
-      regularUnvisited.forEach((store) => {
-        if (!regularByPriority[store.priority]) {
-          regularByPriority[store.priority] = [];
-        }
-        regularByPriority[store.priority].push(store);
-      });
-
-      Object.entries(regularByPriority).forEach(([priority, stores]) => {
-        sheet.getRange(row, 1).setValue(`${priority}: ${stores.length} stores`);
-        row++;
-      });
-      row++;
-    }
-
-    // Show sample of unvisited stores
-    if (regularUnvisited.length > 0) {
-      const headers = [
-        "Store Name",
-        "No.Str",
-        "Retailer",
-        "District",
-        "Priority",
-        "Frequency",
-        "Address",
-        "Visit Type",
-      ];
-      sheet
-        .getRange(row, 1, 1, headers.length)
-        .setValues([headers])
-        .setFontWeight("bold");
-      row++;
-
-      const displayCount = Math.min(20, regularUnvisited.length);
-      for (let i = 0; i < displayCount; i++) {
-        const store = regularUnvisited[i];
-        const frequency = store.baseFrequency
-          ? store.baseFrequency < 1
-            ? store.baseFrequency.toFixed(2)
-            : store.baseFrequency.toString()
-          : (store.visits || 0).toString();
-
-        const visitType = store.isMultiVisit
-          ? "Multi-visit"
-          : store.isFractionalVisit
-          ? "Fractional"
-          : "Regular";
-
-        const data = [
-          store.name,
-          store.noStr || "",
-          store.retailer || "",
-          store.district,
-          store.priority,
-          frequency + "/mo",
-          (store.address || "").substring(0, 40) +
-            (store.address && store.address.length > 40 ? "..." : ""),
-          visitType,
-        ];
-
-        sheet.getRange(row, 1, 1, data.length).setValues([data]);
-
-        if (store.isMultiVisit) {
-          sheet.getRange(row, 1, 1, data.length).setBackground("#ffe0b2"); // Multi-visit - amber
-        } else {
-          sheet.getRange(row, 1, 1, data.length).setBackground("#ffebee"); // Regular - light red
-        }
-
-        row++;
-      }
-
-      if (regularUnvisited.length > displayCount) {
-        row++;
-        sheet
-          .getRange(row, 1)
-          .setValue(
-            "... and " +
-              (regularUnvisited.length - displayCount) +
-              " more stores"
-          )
-          .setFontStyle("italic");
-      }
-    }
+  determineStoreType(store, day) {
+    // Check if this store is likely from cross-border optimization
+    // This is a simplified check - could be enhanced with actual grid tracking
+    return store.gridKey && store.gridKey !== day[0]?.gridKey
+      ? "Cross-border"
+      : "Primary grid";
   }
 
-  getRetailerCounts(week) {
-    const counts = {};
-    week.forEach((dayInfo) => {
-      if (dayInfo.optimizedStores) {
-        dayInfo.optimizedStores.forEach((store) => {
-          const retailer = this.normalizeRetailerName(store.retailer);
-          counts[retailer] = (counts[retailer] || 0) + 1;
-        });
-      }
-    });
+  formatVisitInfo(store) {
+    if (store.isMultiVisit) {
+      return `Visit ${store.visitNum}/${store.actualVisits || 1}`;
+    }
+    if (store.isFractionalVisit) {
+      return `Fractional (${(store.baseFrequency || 0).toFixed(2)})`;
+    }
+    return "Regular";
+  }
 
-    return Object.fromEntries(
-      Object.entries(counts)
-        .filter(([retailer, count]) => count > 0)
-        .sort(([, a], [, b]) => b - a)
-    );
+  formatStoreMallInfo(store, previousStore) {
+    if (!store.mallClusterId) {
+      return "Individual";
+    }
+
+    const mallInfo = store.mallClusterInfo || {};
+    let info = `Mall (${mallInfo.storeCount || "?"} stores)`;
+
+    if (previousStore && previousStore.mallClusterId === store.mallClusterId) {
+      info += " - Walk";
+    } else {
+      info += " - Drive";
+    }
+
+    return info;
   }
 
   normalizeRetailerName(retailer) {
