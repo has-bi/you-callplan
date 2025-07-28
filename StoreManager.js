@@ -1,10 +1,9 @@
-// ==================== STORE MANAGER - SIMPLIFIED ====================
+// ==================== STORE MANAGER - FIXED WITH UNIQUE DEDUPLICATION ====================
 class StoreManager {
   constructor(sheet) {
     this.sheet = sheet;
   }
 
-  // Update visit frequencies with fractional support
   updateVisitFrequencies() {
     const ranges = ["B24", "B25", "B26", "B27", "B28", "B29", "B30", "B31"];
     const priorities = ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"];
@@ -18,7 +17,6 @@ class StoreManager {
           frequency = 0;
         }
 
-        // Round very small frequencies to 0
         if (
           frequency < CONFIG.FRACTIONAL_VISITS.MIN_FREQUENCY &&
           frequency > 0
@@ -41,9 +39,15 @@ class StoreManager {
     });
   }
 
-  // Load stores with fractional visit calculation
+  // FIXED: Load stores with unique deduplication by noStr
   loadStores(includePriorities) {
-    const stores = [];
+    Utils.log(
+      `Loading stores for priorities: ${includePriorities.join(", ")}`,
+      "INFO"
+    );
+
+    const allStores = [];
+    const storeMap = new Map(); // Use Map for deduplication by noStr
     const lastRow = this.sheet.getLastRow();
 
     Object.entries(CONFIG.PRIORITIES).forEach(([priority, config]) => {
@@ -53,6 +57,13 @@ class StoreManager {
 
       const col = config.startCol;
       let storeIndex = 0;
+      let loadedForThisPriority = 0;
+      let skippedDuplicates = 0;
+
+      Utils.log(
+        `Processing ${priority} (column ${col}, frequency: ${config.requiredVisits})...`,
+        "INFO"
+      );
 
       for (let row = 4; row <= lastRow; row++) {
         try {
@@ -62,11 +73,25 @@ class StoreManager {
           const name = this.sheet.getRange(row, col + 1).getValue();
           if (!name) continue;
 
+          const noStr = this.sheet.getRange(row, col).getValue() || "";
+
+          // DEDUPLICATION: Check if we already have this store by noStr
+          if (storeMap.has(noStr)) {
+            Utils.log(
+              `Skipping duplicate store: ${noStr} (${name}) - already loaded as ${
+                storeMap.get(noStr).priority
+              }`,
+              "WARN"
+            );
+            skippedDuplicates++;
+            continue;
+          }
+
           const lat = parseFloat(this.sheet.getRange(row, col + 6).getValue());
           const lng = parseFloat(this.sheet.getRange(row, col + 7).getValue());
           if (isNaN(lat) || isNaN(lng)) continue;
 
-          // FIXED: Calculate actual visits for this store based on frequency
+          // Calculate actual visits for this store
           const actualVisits = Utils.calculateActualVisits(
             config.requiredVisits,
             1,
@@ -76,7 +101,7 @@ class StoreManager {
 
           const store = {
             priority,
-            noStr: this.sheet.getRange(row, col).getValue() || "",
+            noStr: noStr,
             name,
             retailer: this.sheet.getRange(row, col + 2).getValue() || "",
             district: this.sheet.getRange(row, col + 3).getValue() || "Unknown",
@@ -85,18 +110,28 @@ class StoreManager {
             lng,
             salesL6M:
               parseFloat(this.sheet.getRange(row, col + 8).getValue()) || 0,
-
-            // Visit frequency handling
             baseFrequency: config.requiredVisits,
             actualVisits: actualVisits,
             visits: actualVisits,
             visitTime: CONFIG.DEFAULT_VISIT_TIME,
             isFractionalVisit: config.requiredVisits < 1 && actualVisits > 0,
+
+            // Additional tracking info
+            loadedFromRow: row,
+            loadedFromPriority: priority,
+            storeIndex: storeIndex,
           };
 
           // Only add stores that will be visited this month
           if (actualVisits > 0) {
-            stores.push(store);
+            storeMap.set(noStr, store); // Add to map for deduplication
+            allStores.push(store);
+            loadedForThisPriority++;
+
+            Utils.log(
+              `Added: ${noStr} (${name}) as ${priority} - ${actualVisits} visits`,
+              "INFO"
+            );
           }
 
           storeIndex++;
@@ -108,13 +143,45 @@ class StoreManager {
           continue;
         }
       }
+
+      Utils.log(
+        `${priority} complete: ${loadedForThisPriority} stores loaded, ${skippedDuplicates} duplicates skipped`,
+        "INFO"
+      );
     });
 
-    Utils.log("Total stores loaded for this month: " + stores.length, "INFO");
-    return stores;
+    // Final unique check and summary
+    const uniqueStores = Array.from(storeMap.values());
+    const totalDuplicatesRemoved = allStores.length - uniqueStores.length;
+
+    if (totalDuplicatesRemoved > 0) {
+      Utils.log(
+        `⚠️ DEDUPLICATION: Removed ${totalDuplicatesRemoved} duplicate stores`,
+        "WARN"
+      );
+    }
+
+    Utils.log(
+      `✅ UNIQUE STORES LOADED: ${uniqueStores.length} stores for this month`,
+      "INFO"
+    );
+
+    // Log priority distribution of final unique stores
+    const priorityDistribution = {};
+    uniqueStores.forEach((store) => {
+      priorityDistribution[store.priority] =
+        (priorityDistribution[store.priority] || 0) + 1;
+    });
+
+    Utils.log("Priority distribution of unique stores:", "INFO");
+    Object.entries(priorityDistribution).forEach(([priority, count]) => {
+      Utils.log(`  ${priority}: ${count} stores`, "INFO");
+    });
+
+    return uniqueStores;
   }
 
-  // Get store statistics for reporting
+  // Get store statistics with deduplication awareness
   getStoreStatistics(includePriorities) {
     const stats = {
       byPriority: {},
@@ -122,6 +189,7 @@ class StoreManager {
     };
 
     const lastRow = this.sheet.getLastRow();
+    const processedStores = new Set(); // Track by noStr to avoid double counting
 
     Object.entries(CONFIG.PRIORITIES).forEach(([priority, config]) => {
       if (!includePriorities.includes(priority)) return;
@@ -138,6 +206,12 @@ class StoreManager {
 
           const name = this.sheet.getRange(row, col + 1).getValue();
           if (!name) continue;
+
+          const noStr = this.sheet.getRange(row, col).getValue() || "";
+
+          // Skip if already processed (deduplication)
+          if (processedStores.has(noStr)) continue;
+          processedStores.add(noStr);
 
           totalStores++;
 
@@ -176,5 +250,69 @@ class StoreManager {
     });
 
     return stats;
+  }
+
+  // Debug function to check for duplicates in current data
+  checkForDuplicates(includePriorities) {
+    Utils.log("=== CHECKING FOR DUPLICATES IN CURRENT DATA ===", "INFO");
+
+    const storesByNoStr = {};
+    const lastRow = this.sheet.getLastRow();
+
+    Object.entries(CONFIG.PRIORITIES).forEach(([priority, config]) => {
+      if (!includePriorities.includes(priority)) return;
+
+      const col = config.startCol;
+
+      for (let row = 4; row <= lastRow; row++) {
+        try {
+          const shouldVisit = this.sheet.getRange(row, col + 11).getValue();
+          if (shouldVisit !== "YES" && shouldVisit !== true) continue;
+
+          const name = this.sheet.getRange(row, col + 1).getValue();
+          if (!name) continue;
+
+          const noStr = this.sheet.getRange(row, col).getValue() || "";
+
+          if (!storesByNoStr[noStr]) {
+            storesByNoStr[noStr] = [];
+          }
+
+          storesByNoStr[noStr].push({
+            priority: priority,
+            name: name,
+            row: row,
+            col: col,
+          });
+        } catch (e) {
+          continue;
+        }
+      }
+    });
+
+    // Find duplicates
+    const duplicates = Object.entries(storesByNoStr).filter(
+      ([noStr, stores]) => stores.length > 1
+    );
+
+    if (duplicates.length === 0) {
+      Utils.log("✅ No duplicates found in current data", "INFO");
+    } else {
+      Utils.log(`❌ Found ${duplicates.length} duplicate stores:`, "ERROR");
+      duplicates.forEach(([noStr, stores]) => {
+        Utils.log(
+          `  ${noStr} (${stores[0].name}): appears in ${stores
+            .map((s) => `${s.priority}(row ${s.row})`)
+            .join(", ")}`,
+          "ERROR"
+        );
+      });
+    }
+
+    return {
+      totalStores: Object.keys(storesByNoStr).length,
+      duplicates: duplicates,
+      duplicateCount: duplicates.length,
+    };
   }
 }

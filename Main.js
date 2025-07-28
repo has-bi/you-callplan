@@ -10,8 +10,15 @@ function generateEnhancedMonthlyPlan() {
   }
 
   try {
-    Utils.log("=== STARTING ENHANCED MONTHLY PLAN WITH FIXES ===", "INFO");
-    ss.toast("Initializing with problem fixes...", "Processing", -1);
+    Utils.log(
+      "=== STARTING ENHANCED MONTHLY PLAN WITH INTEGRATED POST-PROCESSING ===",
+      "INFO"
+    );
+    ss.toast(
+      "Initializing enhanced optimization with auto-cleanup...",
+      "Processing",
+      -1
+    );
 
     const startTime = new Date();
     const storeManager = new StoreManager(sheet);
@@ -28,35 +35,60 @@ function generateEnhancedMonthlyPlan() {
       return;
     }
 
-    // Run enhanced optimization with fixes
+    // Run normal optimization
+    ss.toast("Running optimization...", "Processing", -1);
     const planResult = routeOptimizer.optimizePlan(stores);
+
+    // ✨ ADD POST-PROCESSING CLEANUP HERE
+    ss.toast("Applying post-processing cleanup...", "Processing", -1);
+    const cleanupResult = PostProcessingDeduplicator.cleanupFinalRoutes(
+      planResult.workingDays
+    );
+
+    // Add cleanup stats to result
+    planResult.statistics.postProcessingCleanup = {
+      duplicatesRemoved: cleanupResult.cleanupStats.duplicatesRemoved,
+      storesWithDuplicates: cleanupResult.cleanupStats.storesWithDuplicates,
+      finalStoreCount: cleanupResult.cleanupStats.storesKept,
+      cleanupActions: cleanupResult.cleanupStats.cleanupActions.length,
+    };
+
     const endTime = new Date();
     const processingTime = ((endTime - startTime) / 1000).toFixed(1);
 
     // Create output
     outputManager.createEnhancedSheet(planResult, utilConfig, stores);
 
-    // Show completion message
+    // Show completion message with cleanup info
     const stats = planResult.statistics;
     let completionMessage = `✅ ENHANCED OPTIMIZATION COMPLETED in ${processingTime}s!\n\n`;
 
+    // Add cleanup information
+    if (stats.postProcessingCleanup) {
+      const cleanup = stats.postProcessingCleanup;
+      completionMessage += `🧹 AUTO-CLEANUP RESULTS:\n`;
+      completionMessage += `• Duplicates removed: ${cleanup.duplicatesRemoved}\n`;
+      completionMessage += `• Stores cleaned: ${cleanup.storesWithDuplicates}\n`;
+      completionMessage += `• Final store count: ${cleanup.finalStoreCount}\n\n`;
+    }
+
     if (stats.crossBorderOptimization) {
       const crossBorderStats = stats.crossBorderOptimization;
-      completionMessage += `📊 Results:\n`;
+      completionMessage += `📊 Optimization Results:\n`;
       completionMessage += `• ${crossBorderStats.daysAfter} optimized days\n`;
       completionMessage += `• ${crossBorderStats.avgUtilization} average utilization\n`;
       completionMessage += `• ${crossBorderStats.efficiencyGain} efficiency gain\n`;
       completionMessage += `• ${crossBorderStats.crossBorderDays} cross-border days\n`;
     } else {
-      completionMessage += `📊 Results:\n`;
+      completionMessage += `📊 Optimization Results:\n`;
       completionMessage += `• ${stats.workingDays} working days used\n`;
       completionMessage += `• ${stats.averageStoresPerDay} stores/day average\n`;
       completionMessage += `• ${stats.totalDistance}km total distance\n`;
       completionMessage += `• ${stats.coveragePercentage}% coverage\n`;
     }
 
-    Utils.log("=== ENHANCED OPTIMIZATION COMPLETED ===", "INFO");
-    ss.toast(completionMessage, "✅ Success", 10);
+    Utils.log("=== ENHANCED OPTIMIZATION WITH CLEANUP COMPLETED ===", "INFO");
+    ss.toast(completionMessage, "✅ Success", 12);
   } catch (error) {
     Utils.log(
       "Error during enhanced plan generation: " + error.toString(),

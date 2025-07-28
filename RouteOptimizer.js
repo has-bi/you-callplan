@@ -1,4 +1,4 @@
-// ==================== ROUTE OPTIMIZER - FIXED CORE ISSUES ====================
+// ==================== ROUTE OPTIMIZER - FIXED WITH STAGE-BY-STAGE DEDUPLICATION ====================
 class RouteOptimizer {
   constructor() {
     this.dateCalculator = new DateCalculator();
@@ -9,7 +9,10 @@ class RouteOptimizer {
 
   // Main optimization flow
   optimizePlan(stores) {
-    Utils.log("=== STARTING ROUTE OPTIMIZATION WITH FIXES ===", "INFO");
+    Utils.log(
+      "=== STARTING ROUTE OPTIMIZATION WITH STAGE DEDUPLICATION ===",
+      "INFO"
+    );
 
     try {
       if (this.useEnhancedOptimization && stores.length >= 10) {
@@ -26,246 +29,188 @@ class RouteOptimizer {
     }
   }
 
-  // FIXED: Basic optimization with all 3 problem fixes
+  // FIXED: Basic optimization with aggressive pre-clustering deduplication
   runBasicOptimizationFixed(stores) {
-    Utils.log("🔧 Using FIXED Basic Geographic Optimization", "INFO");
+    Utils.log(
+      "🔧 Using FIXED Basic Optimization with Aggressive Deduplication",
+      "INFO"
+    );
 
-    const validStores = this.filterByDistanceLimit(stores);
+    // STAGE 0: AGGRESSIVE INPUT DEDUPLICATION
+    const uniqueInputStores = this.aggressiveDeduplication(
+      stores,
+      "INPUT STORES"
+    );
 
-    // FIX 1: Use fixed visit instance creation (no duplicates)
+    const validStores = this.filterByDistanceLimit(uniqueInputStores);
+
+    // FIX 1: Create visit instances with deduplication
     const visitInstances = this.createVisitInstancesFixed(validStores);
+    Utils.log(
+      `Visit instances after creation: ${visitInstances.length}`,
+      "INFO"
+    );
 
-    const optimalK = this.calculateOptimalClusters(visitInstances.length);
-    const clusters = this.performKMeansClustering(visitInstances, optimalK);
-    const dayAssignments = this.assignClustersTodays(clusters);
+    // STAGE 1: PRE-CLUSTERING DEDUPLICATION
+    const preclusteringStores = this.aggressiveDeduplication(
+      visitInstances,
+      "PRE-CLUSTERING"
+    );
 
-    // FIX 3: Enforce time constraints BEFORE route optimization
+    const optimalK = this.calculateOptimalClusters(preclusteringStores.length);
+    const clusters = this.performKMeansClusteringFixed(
+      preclusteringStores,
+      optimalK
+    );
+
+    // STAGE 2: POST-CLUSTERING VERIFICATION
+    const verifiedClusters = this.verifyClustersForDuplicates(clusters);
+
+    const dayAssignments = this.assignClustersTodays(verifiedClusters);
+
+    // STAGE 3 DEDUPLICATION: After day assignment
+    dayAssignments.forEach((day, idx) => {
+      day.stores = this.aggressiveDeduplication(
+        day.stores,
+        `DAY ${idx} AFTER ASSIGNMENT`
+      );
+    });
+
+    // FIX 3: Enforce time constraints with deduplication
     this.enforceTimeConstraints(dayAssignments);
+
+    // STAGE 4 DEDUPLICATION: After time constraints
+    dayAssignments.forEach((day, idx) => {
+      day.stores = this.aggressiveDeduplication(
+        day.stores,
+        `DAY ${idx} AFTER TIME CONSTRAINTS`
+      );
+    });
 
     this.optimizeDailyRoutes(dayAssignments);
 
-    // FIX 2: Use fixed multi-visit constraint enforcement (5 working days)
+    // FIX 2: Multi-visit constraints with deduplication
     this.enforceMultiVisitConstraintsFixed(dayAssignments);
+
+    // STAGE 5: FINAL AGGRESSIVE DEDUPLICATION
+    dayAssignments.forEach((day, idx) => {
+      day.stores = this.aggressiveDeduplication(day.stores, `DAY ${idx} FINAL`);
+    });
+
+    // Final validation
+    this.validateFinalAssignments(dayAssignments);
 
     return this.convertBasicToOutputFormat(
       dayAssignments,
-      stores,
-      visitInstances
+      uniqueInputStores,
+      preclusteringStores
     );
   }
 
-  // FIX 1: Prevent duplicate visits in createVisitInstances
-  createVisitInstancesFixed(stores) {
-    const instances = [];
+  // NEW: Aggressive deduplication that's more thorough
+  aggressiveDeduplication(stores, stageName = "UNKNOWN") {
+    if (!stores || stores.length === 0) return stores;
 
-    stores.forEach((store) => {
-      // FIXED: Use Math.floor to prevent decimals creating extra visits
-      const visitsThisMonth = Math.floor(store.actualVisits || 0);
+    const storeMap = new Map(); // Use Map for better duplicate detection
+    const duplicates = [];
 
-      if (visitsThisMonth > 0) {
-        for (let v = 0; v < visitsThisMonth; v++) {
-          instances.push({
-            ...store,
-            visitNum: v + 1,
-            visitId: `${store.noStr || store.name}_${v + 1}`,
-            isMultiVisit: visitsThisMonth > 1,
-          });
-        }
-      }
-    });
+    stores.forEach((store, index) => {
+      const noStr = store.noStr || store.name || `UNNAMED_${index}`;
 
-    Utils.log(
-      `Visit instances created: ${instances.length} visits from ${stores.length} stores`,
-      "INFO"
-    );
-    return instances;
-  }
+      if (storeMap.has(noStr)) {
+        // Found duplicate - compare which one to keep
+        const existing = storeMap.get(noStr);
+        const duplicate = {
+          noStr: noStr,
+          name: store.name,
+          stage: stageName,
+          visitId: store.visitId,
+          priority: store.priority,
+          existing: existing.priority,
+          action: "REMOVED",
+        };
 
-  // FIX 2: Enforce 5 working day gaps for multi-visit
-  enforceMultiVisitConstraintsFixed(dayAssignments) {
-    const multiVisitStores = {};
+        // Keep the one with higher priority (lower priority number)
+        const existingPriorityNum =
+          parseInt(existing.priority?.replace("P", "")) || 999;
+        const currentPriorityNum =
+          parseInt(store.priority?.replace("P", "")) || 999;
 
-    // Group visits by store noStr
-    dayAssignments.forEach((day, dayIdx) => {
-      day.stores.forEach((store) => {
-        if (store.isMultiVisit) {
-          const noStr = store.noStr || store.name;
-          if (!multiVisitStores[noStr]) multiVisitStores[noStr] = [];
-          multiVisitStores[noStr].push({ store, dayIdx });
-        }
-      });
-    });
-
-    // Fix gap violations
-    Object.entries(multiVisitStores).forEach(([noStr, visits]) => {
-      if (visits.length < 2) return;
-
-      visits.sort((a, b) => a.dayIdx - b.dayIdx);
-
-      for (let i = 1; i < visits.length; i++) {
-        const gap = visits[i].dayIdx - visits[i - 1].dayIdx;
-
-        // FIXED: Use 5 working days minimum gap
-        if (gap < 5) {
-          const violatingVisit = visits[i];
-          const targetDay = Math.min(
-            visits[i - 1].dayIdx + 5,
-            dayAssignments.length - 1
+        if (currentPriorityNum < existingPriorityNum) {
+          // Current store has higher priority, replace existing
+          storeMap.set(noStr, store);
+          duplicate.action = "REPLACED_EXISTING";
+          Utils.log(
+            `🔄 ${stageName}: Replaced ${noStr} (${existing.priority} → ${store.priority})`,
+            "INFO"
           );
-
-          // Remove from current day
-          const currentDay = dayAssignments[violatingVisit.dayIdx];
-          const storeIdx = currentDay.stores.indexOf(violatingVisit.store);
-          if (storeIdx !== -1) {
-            currentDay.stores.splice(storeIdx, 1);
-            Utils.log(
-              `Moved ${noStr} from day ${violatingVisit.dayIdx} to day ${targetDay} (gap fix)`,
-              "INFO"
-            );
-          }
-
-          // Move to valid day with capacity
-          if (
-            targetDay < dayAssignments.length &&
-            dayAssignments[targetDay].stores.length <
-              dayAssignments[targetDay].capacity
-          ) {
-            dayAssignments[targetDay].stores.push(violatingVisit.store);
-            violatingVisit.dayIdx = targetDay;
-          }
+        } else {
+          // Keep existing, discard current
+          Utils.log(
+            `🗑️ ${stageName}: Discarded duplicate ${noStr} (kept ${existing.priority}, discarded ${store.priority})`,
+            "WARN"
+          );
         }
+
+        duplicates.push(duplicate);
+      } else {
+        storeMap.set(noStr, store);
       }
     });
-  }
 
-  // FIX 3: Strict time enforcement - move violating stores to other days
-  enforceTimeConstraints(dayAssignments) {
-    dayAssignments.forEach((day, dayIdx) => {
-      if (day.stores.length === 0) return;
+    const unique = Array.from(storeMap.values());
 
-      // Calculate route timing
-      let currentTime = CONFIG.WORK.START;
-      let violatingStoreIndex = -1;
-
-      for (let i = 0; i < day.stores.length; i++) {
-        const store = day.stores[i];
-        const distance =
-          i === 0
-            ? Utils.distance(
-                CONFIG.START.LAT,
-                CONFIG.START.LNG,
-                store.lat,
-                store.lng
-              )
-            : Utils.distance(
-                day.stores[i - 1].lat,
-                day.stores[i - 1].lng,
-                store.lat,
-                store.lng
-              );
-
-        currentTime += Math.round(distance * 3); // Travel time
-
-        // Handle lunch/prayer break
-        const isFriday = day.dayInfo?.isFriday || false;
-        const breakStart = isFriday
-          ? CONFIG.FRIDAY_PRAYER.START
-          : CONFIG.LUNCH.START;
-        const breakEnd = isFriday ? CONFIG.FRIDAY_PRAYER.END : CONFIG.LUNCH.END;
-
-        if (currentTime >= breakStart && currentTime < breakEnd) {
-          currentTime = breakEnd;
-        }
-
-        currentTime +=
-          CONFIG.BUFFER_TIME + (store.visitTime || CONFIG.DEFAULT_VISIT_TIME);
-
-        // FIXED: Check if this store would end after 6:20 PM
-        if (currentTime > CONFIG.WORK.END) {
-          violatingStoreIndex = i;
-          break;
-        }
-      }
-
-      // Move violating stores to other days
-      if (violatingStoreIndex >= 0) {
-        const violatingStores = day.stores.splice(violatingStoreIndex);
+    if (duplicates.length > 0) {
+      Utils.log(
+        `🔍 AGGRESSIVE DEDUP - ${stageName}: Processed ${duplicates.length} duplicates:`,
+        "WARN"
+      );
+      duplicates.forEach((dup) => {
         Utils.log(
-          `Day ${dayIdx}: Moving ${violatingStores.length} stores due to time constraints`,
+          `   ${dup.action}: ${dup.noStr} (${dup.name}) [existing: ${dup.existing}, duplicate: ${dup.priority}]`,
           "WARN"
         );
-
-        // Try to place in other days with capacity
-        violatingStores.forEach((store) => {
-          for (
-            let targetDay = 0;
-            targetDay < dayAssignments.length;
-            targetDay++
-          ) {
-            if (
-              targetDay !== dayIdx &&
-              dayAssignments[targetDay].stores.length <
-                dayAssignments[targetDay].capacity
-            ) {
-              dayAssignments[targetDay].stores.push(store);
-              Utils.log(
-                `Moved ${store.noStr || store.name} to day ${targetDay}`,
-                "INFO"
-              );
-              break;
-            }
-          }
-        });
-      }
-    });
-  }
-
-  // Enhanced optimization (kept for backward compatibility)
-  runEnhancedOptimization(stores) {
-    Utils.log("🚀 Using Enhanced Cross-Border Optimization", "INFO");
-
-    const optimizedConfig = this.getOptimizedConfig(stores);
-    const crossBorderOptimizer = new CrossBorderOptimizer(optimizedConfig);
-    const optimizationResult = crossBorderOptimizer.optimize(
-      stores,
-      this.workingDays
-    );
-
-    return this.convertToExistingFormat(optimizationResult, stores);
-  }
-
-  // Core optimization methods (simplified)
-  filterByDistanceLimit(stores) {
-    const maxDistance = CONFIG.TRAVEL_LIMITS?.MAX_DISTANCE_FROM_HOME || 40;
-    const validStores = stores.filter((store) => {
-      const distance = Utils.distance(
-        CONFIG.START.LAT,
-        CONFIG.START.LNG,
-        store.lat,
-        store.lng
+      });
+      Utils.log(
+        `   Result: ${stores.length} → ${unique.length} stores`,
+        "INFO"
       );
-      return distance <= maxDistance;
-    });
+    } else {
+      Utils.log(
+        `✅ AGGRESSIVE DEDUP - ${stageName}: No duplicates found (${stores.length} stores)`,
+        "INFO"
+      );
+    }
+
+    return unique;
+  }
+
+  // FIXED: K-means clustering with better duplicate prevention
+  performKMeansClusteringFixed(stores, k) {
+    if (stores.length <= k) {
+      Utils.log(
+        `Small dataset: Creating ${stores.length} single-store clusters`,
+        "INFO"
+      );
+      return stores.map((store) => [store]);
+    }
 
     Utils.log(
-      `Distance filter: ${validStores.length}/${stores.length} stores within ${maxDistance}km`,
+      `🔗 Starting FIXED K-means clustering: ${stores.length} unique stores into ${k} clusters`,
       "INFO"
     );
-    return validStores;
-  }
 
-  calculateOptimalClusters(storeCount) {
-    const avgStoresPerDay =
-      (CONFIG.CLUSTERING.MIN_STORES_PER_DAY +
-        CONFIG.CLUSTERING.MAX_STORES_PER_DAY) /
-      2;
-    const workingDays = this.flatDays.length;
-    return Math.min(Math.ceil(storeCount / avgStoresPerDay), workingDays);
-  }
-
-  performKMeansClustering(stores, k) {
-    if (stores.length <= k) {
-      return stores.map((store) => [store]);
+    // Pre-clustering verification
+    const preClusterDedup = this.aggressiveDeduplication(
+      stores,
+      "PRE-CLUSTER VERIFICATION"
+    );
+    if (preClusterDedup.length !== stores.length) {
+      Utils.log(
+        `❌ WARNING: Found duplicates before clustering! Using deduplicated set.`,
+        "ERROR"
+      );
+      stores = preClusterDedup;
     }
 
     const centroids = this.initializeCentroidsKMeansPlusPlus(stores, k);
@@ -278,6 +223,7 @@ class RouteOptimizer {
         .fill(null)
         .map(() => []);
 
+      // Simple assignment - each store goes to exactly one cluster
       stores.forEach((store) => {
         let minDist = Infinity;
         let bestCluster = 0;
@@ -311,7 +257,555 @@ class RouteOptimizer {
       iterations++;
     }
 
-    return clusters.filter((c) => c.length > 0);
+    const finalClusters = clusters.filter((c) => c.length > 0);
+
+    Utils.log(
+      `✅ K-means clustering complete: ${finalClusters.length} clusters`,
+      "INFO"
+    );
+    finalClusters.forEach((cluster, idx) => {
+      Utils.log(`   Cluster ${idx + 1}: ${cluster.length} stores`, "INFO");
+    });
+
+    return finalClusters;
+  }
+
+  // NEW: Verify clusters don't contain duplicates
+  verifyClustersForDuplicates(clusters) {
+    Utils.log("🔍 Verifying clusters for duplicates...", "INFO");
+
+    const verifiedClusters = clusters
+      .map((cluster, idx) => {
+        const deduplicated = this.aggressiveDeduplication(
+          cluster,
+          `CLUSTER ${idx + 1} VERIFICATION`
+        );
+        return deduplicated;
+      })
+      .filter((cluster) => cluster.length > 0);
+
+    // Cross-cluster duplicate check
+    const allStores = [];
+    verifiedClusters.forEach((cluster) => allStores.push(...cluster));
+
+    const finalCheck = this.aggressiveDeduplication(
+      allStores,
+      "CROSS-CLUSTER VERIFICATION"
+    );
+
+    if (finalCheck.length !== allStores.length) {
+      Utils.log(
+        `❌ CRITICAL: Found cross-cluster duplicates! ${allStores.length} → ${finalCheck.length}`,
+        "ERROR"
+      );
+
+      // Rebuild clusters from deduplicated stores
+      Utils.log("🔧 Rebuilding clusters from deduplicated stores...", "WARN");
+      const rebuiltClusters = this.rebuildClustersFromDeduplicatedStores(
+        finalCheck,
+        verifiedClusters.length
+      );
+      return rebuiltClusters;
+    }
+
+    Utils.log(
+      `✅ Cluster verification complete: No cross-cluster duplicates found`,
+      "INFO"
+    );
+    return verifiedClusters;
+  }
+
+  // NEW: Rebuild clusters if cross-cluster duplicates found
+  rebuildClustersFromDeduplicatedStores(
+    deduplicatedStores,
+    targetClusterCount
+  ) {
+    Utils.log(
+      `🔧 Rebuilding ${targetClusterCount} clusters from ${deduplicatedStores.length} deduplicated stores`,
+      "INFO"
+    );
+
+    const storesPerCluster = Math.ceil(
+      deduplicatedStores.length / targetClusterCount
+    );
+    const rebuiltClusters = [];
+
+    for (let i = 0; i < targetClusterCount; i++) {
+      const startIdx = i * storesPerCluster;
+      const endIdx = Math.min(
+        startIdx + storesPerCluster,
+        deduplicatedStores.length
+      );
+
+      if (startIdx < deduplicatedStores.length) {
+        const cluster = deduplicatedStores.slice(startIdx, endIdx);
+        rebuiltClusters.push(cluster);
+        Utils.log(
+          `   Rebuilt cluster ${i + 1}: ${cluster.length} stores`,
+          "INFO"
+        );
+      }
+    }
+
+    return rebuiltClusters;
+  }
+
+  // CORE FIX: Deduplication helper with detailed logging
+  deduplicateStoresByNoStr(stores, stageName = "UNKNOWN") {
+    if (!stores || stores.length === 0) return stores;
+
+    const seen = new Set();
+    const duplicates = [];
+    const unique = [];
+
+    stores.forEach((store, index) => {
+      const noStr = store.noStr || store.name || `UNNAMED_${index}`;
+
+      if (seen.has(noStr)) {
+        duplicates.push({
+          noStr: noStr,
+          name: store.name,
+          stage: stageName,
+          visitId: store.visitId,
+          priority: store.priority,
+        });
+      } else {
+        seen.add(noStr);
+        unique.push(store);
+      }
+    });
+
+    if (duplicates.length > 0) {
+      Utils.log(
+        `🔍 STAGE: ${stageName} - Removed ${duplicates.length} duplicates:`,
+        "WARN"
+      );
+      duplicates.forEach((dup) => {
+        Utils.log(
+          `   - ${dup.noStr} (${dup.name}) [${dup.priority}] visitId: ${dup.visitId}`,
+          "WARN"
+        );
+      });
+      Utils.log(
+        `   Result: ${stores.length} → ${unique.length} stores`,
+        "INFO"
+      );
+    } else {
+      Utils.log(
+        `✅ STAGE: ${stageName} - No duplicates found (${stores.length} stores)`,
+        "INFO"
+      );
+    }
+
+    return unique;
+  }
+
+  // Enhanced validation for final assignments
+  validateFinalAssignments(dayAssignments) {
+    Utils.log(
+      "🔍 FINAL VALIDATION: Checking for any remaining duplicates",
+      "INFO"
+    );
+
+    const allAssignedStores = [];
+    const storesByDay = {};
+
+    dayAssignments.forEach((day, dayIdx) => {
+      storesByDay[dayIdx] = day.stores.map((s) => s.noStr || s.name);
+      allAssignedStores.push(...day.stores);
+    });
+
+    // Check for cross-day duplicates
+    const crossDayDuplicates = this.findCrossDayDuplicates(storesByDay);
+    if (crossDayDuplicates.length > 0) {
+      Utils.log("❌ CROSS-DAY DUPLICATES FOUND:", "ERROR");
+      crossDayDuplicates.forEach((dup) => {
+        Utils.log(
+          `   ${dup.noStr} appears in days: ${dup.days.join(", ")}`,
+          "ERROR"
+        );
+      });
+    }
+
+    // Final deduplication of all assigned stores
+    const finalDedup = this.deduplicateStoresByNoStr(
+      allAssignedStores,
+      "FINAL VALIDATION"
+    );
+
+    Utils.log(
+      `✅ FINAL VALIDATION COMPLETE: ${finalDedup.length} unique stores across all days`,
+      "INFO"
+    );
+  }
+
+  findCrossDayDuplicates(storesByDay) {
+    const storeToDays = {};
+
+    // Map each store to the days it appears in
+    Object.entries(storesByDay).forEach(([dayIdx, stores]) => {
+      stores.forEach((noStr) => {
+        if (!storeTodays[noStr]) {
+          storeTodays[noStr] = [];
+        }
+        storeTodays[noStr].push(parseInt(dayIdx));
+      });
+    });
+
+    // Find stores that appear in multiple days
+    return Object.entries(storeTodays)
+      .filter(([noStr, days]) => days.length > 1)
+      .map(([noStr, days]) => ({ noStr, days }));
+  }
+
+  // FIX 1: Create visit instances with extra safety
+  createVisitInstancesFixed(stores) {
+    const instances = [];
+    const processedStores = new Set(); // Extra safety
+
+    stores.forEach((store) => {
+      const noStr = store.noStr || store.name;
+
+      // Extra safety: Skip if already processed
+      if (processedStores.has(noStr)) {
+        Utils.log(
+          `⚠️ VISIT INSTANCES: Skipping already processed store ${noStr}`,
+          "WARN"
+        );
+        return;
+      }
+
+      const visitsThisMonth = Math.floor(store.actualVisits || 0);
+
+      if (visitsThisMonth > 0) {
+        for (let v = 0; v < visitsThisMonth; v++) {
+          instances.push({
+            ...store,
+            visitNum: v + 1,
+            visitId: `${noStr}_V${v + 1}`,
+            isMultiVisit: visitsThisMonth > 1,
+          });
+        }
+        processedStores.add(noStr);
+      }
+    });
+
+    Utils.log(
+      `Visit instances created: ${instances.length} from ${stores.length} stores`,
+      "INFO"
+    );
+    return instances;
+  }
+
+  // FIX 2: Multi-visit constraints with safe store moving
+  enforceMultiVisitConstraintsFixed(dayAssignments) {
+    Utils.log("🔧 Enforcing multi-visit constraints with safe moving", "INFO");
+
+    const multiVisitStores = {};
+
+    // Collect all multi-visit stores with their day assignments
+    dayAssignments.forEach((day, dayIdx) => {
+      day.stores.forEach((store, storeIdx) => {
+        if (store.isMultiVisit) {
+          const noStr = store.noStr || store.name;
+          if (!multiVisitStores[noStr]) {
+            multiVisitStores[noStr] = [];
+          }
+          multiVisitStores[noStr].push({
+            store,
+            dayIdx,
+            storeIdx,
+            storeReference: store, // Keep reference for safe removal
+          });
+        }
+      });
+    });
+
+    // Fix gap violations with safe store movement
+    Object.entries(multiVisitStores).forEach(([noStr, visits]) => {
+      if (visits.length < 2) return;
+
+      visits.sort((a, b) => a.dayIdx - b.dayIdx);
+
+      for (let i = 1; i < visits.length; i++) {
+        const gap = visits[i].dayIdx - visits[i - 1].dayIdx;
+
+        if (gap < 5) {
+          const violatingVisit = visits[i];
+          const targetDay = Math.min(
+            visits[i - 1].dayIdx + 5,
+            dayAssignments.length - 1
+          );
+
+          Utils.log(
+            `Moving ${noStr} from day ${violatingVisit.dayIdx} to day ${targetDay} (gap: ${gap} < 5)`,
+            "INFO"
+          );
+
+          // SAFE REMOVAL: Remove by exact reference
+          const currentDay = dayAssignments[violatingVisit.dayIdx];
+          const exactIndex = currentDay.stores.findIndex(
+            (s) =>
+              (s.noStr || s.name) === noStr &&
+              s.visitId === violatingVisit.store.visitId
+          );
+
+          if (exactIndex !== -1) {
+            const removedStore = currentDay.stores.splice(exactIndex, 1)[0];
+
+            // SAFE ADDITION: Add to target day if capacity allows
+            if (
+              targetDay < dayAssignments.length &&
+              dayAssignments[targetDay].stores.length <
+                (dayAssignments[targetDay].capacity ||
+                  CONFIG.CLUSTERING.MAX_STORES_PER_DAY)
+            ) {
+              dayAssignments[targetDay].stores.push(removedStore);
+              violatingVisit.dayIdx = targetDay; // Update tracking
+              Utils.log(
+                `✅ Successfully moved ${noStr} to day ${targetDay}`,
+                "INFO"
+              );
+            } else {
+              Utils.log(
+                `⚠️ Could not move ${noStr} to day ${targetDay} (no capacity)`,
+                "WARN"
+              );
+              // Put it back if can't move
+              currentDay.stores.push(removedStore);
+            }
+          } else {
+            Utils.log(
+              `❌ Could not find ${noStr} for removal in day ${violatingVisit.dayIdx}`,
+              "ERROR"
+            );
+          }
+        }
+      }
+    });
+  }
+
+  // FIX 3: Time constraints with safe store moving
+  enforceTimeConstraints(dayAssignments) {
+    Utils.log("🔧 Enforcing time constraints with safe moving", "INFO");
+
+    dayAssignments.forEach((day, dayIdx) => {
+      if (day.stores.length === 0) return;
+
+      let currentTime = CONFIG.WORK.START;
+      let violatingStoreIndex = -1;
+
+      for (let i = 0; i < day.stores.length; i++) {
+        const store = day.stores[i];
+        const distance =
+          i === 0
+            ? Utils.distance(
+                CONFIG.START.LAT,
+                CONFIG.START.LNG,
+                store.lat,
+                store.lng
+              )
+            : Utils.distance(
+                day.stores[i - 1].lat,
+                day.stores[i - 1].lng,
+                store.lat,
+                store.lng
+              );
+
+        currentTime += Math.round(distance * 3);
+
+        // Handle breaks
+        const isFriday = day.dayInfo?.isFriday || false;
+        const breakStart = isFriday
+          ? CONFIG.FRIDAY_PRAYER.START
+          : CONFIG.LUNCH.START;
+        const breakEnd = isFriday ? CONFIG.FRIDAY_PRAYER.END : CONFIG.LUNCH.END;
+
+        if (currentTime >= breakStart && currentTime < breakEnd) {
+          currentTime = breakEnd;
+        }
+
+        currentTime +=
+          CONFIG.BUFFER_TIME + (store.visitTime || CONFIG.DEFAULT_VISIT_TIME);
+
+        if (currentTime > CONFIG.WORK.END) {
+          violatingStoreIndex = i;
+          break;
+        }
+      }
+
+      // SAFE REMOVAL: Move violating stores
+      if (violatingStoreIndex >= 0) {
+        const violatingStores = day.stores.splice(violatingStoreIndex);
+        Utils.log(
+          `Day ${dayIdx}: Moving ${violatingStores.length} stores due to time constraints`,
+          "WARN"
+        );
+
+        // Try to place in other days
+        violatingStores.forEach((store) => {
+          let placed = false;
+          for (
+            let targetDay = 0;
+            targetDay < dayAssignments.length;
+            targetDay++
+          ) {
+            if (
+              targetDay !== dayIdx &&
+              dayAssignments[targetDay].stores.length <
+                (dayAssignments[targetDay].capacity ||
+                  CONFIG.CLUSTERING.MAX_STORES_PER_DAY)
+            ) {
+              dayAssignments[targetDay].stores.push(store);
+              Utils.log(
+                `Moved ${store.noStr || store.name} to day ${targetDay}`,
+                "INFO"
+              );
+              placed = true;
+              break;
+            }
+          }
+
+          if (!placed) {
+            Utils.log(
+              `⚠️ Could not place ${store.noStr || store.name} in any day`,
+              "WARN"
+            );
+          }
+        });
+      }
+    });
+  }
+
+  // Core optimization methods (unchanged but with deduplication integration)
+  filterByDistanceLimit(stores) {
+    const maxDistance = CONFIG.TRAVEL_LIMITS?.MAX_DISTANCE_FROM_HOME || 40;
+    const validStores = stores.filter((store) => {
+      const distance = Utils.distance(
+        CONFIG.START.LAT,
+        CONFIG.START.LNG,
+        store.lat,
+        store.lng
+      );
+      return distance <= maxDistance;
+    });
+
+    Utils.log(
+      `Distance filter: ${validStores.length}/${stores.length} stores within ${maxDistance}km`,
+      "INFO"
+    );
+    return validStores;
+  }
+
+  calculateOptimalClusters(storeCount) {
+    const avgStoresPerDay =
+      (CONFIG.CLUSTERING.MIN_STORES_PER_DAY +
+        CONFIG.CLUSTERING.MAX_STORES_PER_DAY) /
+      2;
+    const workingDays = this.flatDays.length;
+    return Math.min(Math.ceil(storeCount / avgStoresPerDay), workingDays);
+  }
+
+  performKMeansClustering(stores, k) {
+    if (stores.length <= k) {
+      return stores.map((store) => [store]);
+    }
+
+    Utils.log(
+      `🔗 Starting K-means clustering: ${stores.length} stores into ${k} clusters`,
+      "INFO"
+    );
+
+    const centroids = this.initializeCentroidsKMeansPlusPlus(stores, k);
+    let clusters = [];
+    let iterations = 0;
+    const maxIterations = 50;
+
+    while (iterations < maxIterations) {
+      clusters = Array(k)
+        .fill(null)
+        .map(() => []);
+      const assignedStores = new Set(); // FIXED: Track assigned stores by noStr
+
+      stores.forEach((store) => {
+        const noStr = store.noStr || store.name;
+
+        // FIXED: Skip if already assigned to prevent duplicates in clustering
+        if (assignedStores.has(noStr)) {
+          Utils.log(
+            `⚠️ CLUSTERING: Store ${noStr} already assigned, skipping duplicate`,
+            "WARN"
+          );
+          return;
+        }
+
+        let minDist = Infinity;
+        let bestCluster = 0;
+
+        centroids.forEach((centroid, idx) => {
+          const dist = Utils.distance(
+            store.lat,
+            store.lng,
+            centroid.lat,
+            centroid.lng
+          );
+          if (dist < minDist) {
+            minDist = dist;
+            bestCluster = idx;
+          }
+        });
+
+        clusters[bestCluster].push(store);
+        assignedStores.add(noStr); // Mark as assigned
+
+        Utils.log(
+          `📍 CLUSTERING: ${noStr} assigned to cluster ${bestCluster}`,
+          "INFO"
+        );
+      });
+
+      // Update centroids
+      clusters.forEach((cluster, idx) => {
+        if (cluster.length > 0) {
+          centroids[idx] = {
+            lat: cluster.reduce((sum, s) => sum + s.lat, 0) / cluster.length,
+            lng: cluster.reduce((sum, s) => sum + s.lng, 0) / cluster.length,
+          };
+        }
+      });
+
+      iterations++;
+    }
+
+    const finalClusters = clusters.filter((c) => c.length > 0);
+
+    // Final verification: Check for any duplicates across clusters
+    const allClusteredStores = [];
+    finalClusters.forEach((cluster, idx) => {
+      Utils.log(`Cluster ${idx + 1}: ${cluster.length} stores`, "INFO");
+      allClusteredStores.push(...cluster);
+    });
+
+    // Verify no duplicates created during clustering
+    const verification = this.deduplicateStoresByNoStr(
+      allClusteredStores,
+      "CLUSTERING VERIFICATION"
+    );
+    if (verification.length !== allClusteredStores.length) {
+      Utils.log(
+        `❌ CLUSTERING ERROR: Created ${
+          allClusteredStores.length - verification.length
+        } duplicates during clustering!`,
+        "ERROR"
+      );
+    }
+
+    Utils.log(
+      `✅ K-means clustering complete: ${finalClusters.length} clusters, ${allClusteredStores.length} total stores`,
+      "INFO"
+    );
+
+    return finalClusters;
   }
 
   initializeCentroidsKMeansPlusPlus(stores, k) {
@@ -469,7 +963,7 @@ class RouteOptimizer {
     return totalDistance;
   }
 
-  // Output conversion methods (simplified)
+  // Output methods (simplified)
   convertBasicToOutputFormat(dayAssignments, originalStores, visitInstances) {
     let dayIndex = 0;
     this.workingDays.forEach((week) => {
@@ -611,7 +1105,18 @@ class RouteOptimizer {
     return flat;
   }
 
-  // Enhanced optimization helper methods (simplified versions)
+  // Enhanced optimization methods (simplified)
+  runEnhancedOptimization(stores) {
+    Utils.log("🚀 Using Enhanced Cross-Border Optimization", "INFO");
+    const optimizedConfig = this.getOptimizedConfig(stores);
+    const crossBorderOptimizer = new CrossBorderOptimizer(optimizedConfig);
+    const optimizationResult = crossBorderOptimizer.optimize(
+      stores,
+      this.workingDays
+    );
+    return this.convertToExistingFormat(optimizationResult, stores);
+  }
+
   getOptimizedConfig(stores) {
     return {
       gridSize: 0.02,
@@ -623,7 +1128,6 @@ class RouteOptimizer {
   }
 
   convertToExistingFormat(optimizationResult, originalStores) {
-    // Simplified conversion for enhanced optimization results
     let dayIndex = 0;
     this.workingDays.forEach((week) => {
       week.forEach((day) => {
@@ -679,7 +1183,7 @@ class RouteOptimizer {
   }
 }
 
-// ==================== PROBLEM ANALYZER ====================
+// ==================== PROBLEM ANALYZER - UPDATED ====================
 class RouteProblemAnalyzer {
   analyzeRouteProblems(planResult) {
     Utils.log("=== ANALYZING ROUTE PROBLEMS ===", "INFO");
