@@ -33,12 +33,12 @@ const CONFIG = {
   PRIORITIES: {
     P1: { startCol: 7, requiredVisits: 2 },
     P2: { startCol: 21, requiredVisits: 1 },
-    P3: { startCol: 28, requiredVisits: 1 },
-    P4: { startCol: 35, requiredVisits: 1 },
-    P5: { startCol: 42, requiredVisits: 1 },
-    P6: { startCol: 49, requiredVisits: 1 },
-    P7: { startCol: 56, requiredVisits: 1 },
-    P8: { startCol: 63, requiredVisits: 1 },
+    P3: { startCol: 35, requiredVisits: 1 },
+    P4: { startCol: 49, requiredVisits: 1 },
+    P5: { startCol: 63, requiredVisits: 1 },
+    P6: { startCol: 77, requiredVisits: 1 },
+    P7: { startCol: 91, requiredVisits: 1 },
+    P8: { startCol: 105, requiredVisits: 1 },
   },
 
   START: { LAT: 3.006902971094009, LNG: 101.76718109065438 },
