@@ -1,4 +1,4 @@
-// ==================== POST-PROCESSING DEDUPLICATOR - STANDALONE ====================
+// ==================== UPDATED POST-PROCESSING WITH LAYERED APPROACH ====================
 class PostProcessingDeduplicator {
   // Main post-processing function - call this after route optimization
   static cleanupFinalRoutes(workingDays) {
@@ -27,7 +27,170 @@ class PostProcessingDeduplicator {
     return cleanupResult;
   }
 
-  // Step 1: Collect all stores from all days with their day info
+  // NEW: Layered consolidation using your algorithm
+  static consolidateSmallDays(workingDays) {
+    Utils.log("=== STARTING LAYERED PRIORITY CONSOLIDATION ===", "INFO");
+
+    // Use the new layered priority optimizer
+    const layeredResult =
+      LayeredPriorityOptimizer.optimizeWorkingDays(workingDays);
+
+    // Convert to the expected format for main system compatibility
+    const consolidationResult =
+      this.convertLayeredResultToLegacyFormat(layeredResult);
+
+    this.logConsolidationSummary(consolidationResult, layeredResult);
+
+    Utils.log("=== LAYERED PRIORITY CONSOLIDATION COMPLETED ===", "INFO");
+    return consolidationResult;
+  }
+
+  // Convert layered results to legacy format for main system compatibility
+  static convertLayeredResultToLegacyFormat(layeredResult) {
+    const totalP2Added = layeredResult.phase2_p2.storesAdded;
+    const totalP3Added = layeredResult.phase3_p3.storesAdded;
+    const totalDaysOptimized =
+      layeredResult.phase2_p2.daysOptimized +
+      layeredResult.phase3_p3.daysOptimized;
+    const totalDaysCombined =
+      layeredResult.phase1_p1.daysCombined +
+      layeredResult.phase2_p2.daysCombined +
+      layeredResult.phase3_p3.daysCombined;
+    const totalStoresRedistributed =
+      layeredResult.phase1_p1.storesPlaced +
+      layeredResult.phase2_p2.storesAdded +
+      layeredResult.phase3_p3.storesAdded;
+
+    return {
+      consolidationCount: totalDaysOptimized,
+      mergedDays: totalDaysCombined,
+      distributedStores: totalStoresRedistributed,
+      p2StoresAdded: totalP2Added,
+      p3StoresAdded: totalP3Added, // New field for P3 tracking
+      emptyDaysFilled: this.calculateEmptyDaysFilled(layeredResult),
+      daysToppedup: this.calculateDaysToppedup(layeredResult),
+
+      // Additional layered-specific metrics
+      layeredMetrics: {
+        p1Foundation: layeredResult.phase1_p1,
+        p2Enhancement: layeredResult.phase2_p2,
+        p3Enhancement: layeredResult.phase3_p3,
+        finalValidation: layeredResult.phase4_final,
+        algorithmUsed: "LAYERED_PRIORITY_OPTIMIZATION",
+      },
+    };
+  }
+
+  // Calculate empty days filled (estimate based on P2/P3 additions)
+  static calculateEmptyDaysFilled(layeredResult) {
+    // Estimate: Days that were likely empty and are now filled
+    // This is an approximation since we don't track exact empty->filled transitions
+    const totalNewStores =
+      layeredResult.phase2_p2.storesAdded + layeredResult.phase3_p3.storesAdded;
+    const avgStoresPerEmptyDay = 8; // Estimate
+    return Math.floor(totalNewStores / avgStoresPerEmptyDay);
+  }
+
+  // Calculate days topped up (estimate based on optimization counts)
+  static calculateDaysToppedup(layeredResult) {
+    // Days that were under-optimized and got additional stores
+    return (
+      layeredResult.phase2_p2.daysOptimized +
+      layeredResult.phase3_p3.daysOptimized
+    );
+  }
+
+  // Enhanced logging that shows both legacy and layered format
+  static logConsolidationSummary(consolidationResult, layeredResult) {
+    Utils.log("", "INFO");
+    Utils.log("📊 DAY CONSOLIDATION SUMMARY:", "INFO");
+    Utils.log("==============================", "INFO");
+
+    // Legacy format (for compatibility with existing system)
+    Utils.log("LEGACY FORMAT (for compatibility):", "INFO");
+    Utils.log(
+      `• Days optimized: ${consolidationResult.consolidationCount}`,
+      "INFO"
+    );
+    Utils.log(`• Days merged: ${consolidationResult.mergedDays}`, "INFO");
+    Utils.log(
+      `• Stores redistributed: ${consolidationResult.distributedStores}`,
+      "INFO"
+    );
+    Utils.log(
+      `• P2 stores added: ${consolidationResult.p2StoresAdded}`,
+      "INFO"
+    );
+    Utils.log(
+      `• P3 stores added: ${consolidationResult.p3StoresAdded}`,
+      "INFO"
+    );
+    Utils.log(
+      `• Empty days filled: ${consolidationResult.emptyDaysFilled}`,
+      "INFO"
+    );
+    Utils.log(`• Days topped up: ${consolidationResult.daysToppedup}`, "INFO");
+    Utils.log("", "INFO");
+
+    // Layered approach details
+    Utils.log("LAYERED APPROACH DETAILS:", "INFO");
+    Utils.log(
+      `• Algorithm: ${consolidationResult.layeredMetrics.algorithmUsed}`,
+      "INFO"
+    );
+    Utils.log(
+      `• P1 foundation days: ${layeredResult.phase1_p1.daysCreated}`,
+      "INFO"
+    );
+    Utils.log(
+      `• P2 enhancement days: ${layeredResult.phase2_p2.daysOptimized}`,
+      "INFO"
+    );
+    Utils.log(
+      `• P3 enhancement days: ${layeredResult.phase3_p3.daysOptimized}`,
+      "INFO"
+    );
+    Utils.log(
+      `• Time violations handled: ${layeredResult.phase4_final.timeViolations}`,
+      "INFO"
+    );
+    Utils.log(
+      `• Final active days: ${layeredResult.phase4_final.finalDaysCount}`,
+      "INFO"
+    );
+    Utils.log("", "INFO");
+
+    // Success indicators
+    const totalStoresAdded =
+      consolidationResult.p2StoresAdded + consolidationResult.p3StoresAdded;
+    if (totalStoresAdded > 0) {
+      Utils.log(
+        "✅ Successfully utilized P2/P3 stores with layered approach",
+        "INFO"
+      );
+    }
+    if (consolidationResult.mergedDays > 0) {
+      Utils.log(
+        "✅ Successfully combined under-optimized days geographically",
+        "INFO"
+      );
+    }
+    if (layeredResult.phase4_final.timeViolations === 0) {
+      Utils.log("✅ All days meet 6:20 PM time constraint", "INFO");
+    } else {
+      Utils.log(
+        `⚠️ ${layeredResult.phase4_final.timeViolations} days required time trimming`,
+        "WARN"
+      );
+    }
+
+    Utils.log(
+      "🎯 LAYERED OPTIMIZATION: P1 Foundation → P2 Enhancement → P3 Enhancement → Time Validation",
+      "INFO"
+    );
+  }
+
+  // Existing methods from original PostProcessingDeduplicator (keeping for compatibility)
   static collectAllScheduledStores(workingDays) {
     const allStores = [];
     let globalDayIndex = 0;
@@ -59,7 +222,6 @@ class PostProcessingDeduplicator {
     return allStores;
   }
 
-  // Step 2: Group stores by noStr
   static groupStoresByNoStr(allStores) {
     const storeGroups = new Map();
 
@@ -86,7 +248,6 @@ class PostProcessingDeduplicator {
     return storeGroups;
   }
 
-  // Step 3: Apply visit frequency rules and clean up duplicates
   static applyVisitFrequencyRules(storeGroups) {
     const finalStores = [];
     const cleanupStats = {
@@ -102,30 +263,17 @@ class PostProcessingDeduplicator {
       const actualAppearances = group.actualAppearances.length;
 
       if (actualAppearances <= expectedVisits) {
-        // No duplicates - keep all appearances
         finalStores.push(...group.actualAppearances);
         cleanupStats.storesKept += actualAppearances;
-
-        Utils.log(
-          `✅ KEEP ALL: ${noStr} (${group.name}) - ${actualAppearances}/${expectedVisits} visits OK`,
-          "INFO"
-        );
       } else {
-        // Has duplicates - apply cleanup rules
         cleanupStats.storesWithDuplicates++;
         const duplicatesCount = actualAppearances - expectedVisits;
         cleanupStats.duplicatesRemoved += duplicatesCount;
-
-        Utils.log(
-          `🔧 CLEANUP: ${noStr} (${group.name}) - ${actualAppearances} appearances, expected ${expectedVisits}`,
-          "WARN"
-        );
 
         const selectedStores = this.selectBestStores(group, expectedVisits);
         finalStores.push(...selectedStores);
         cleanupStats.storesKept += selectedStores.length;
 
-        // Log cleanup action
         cleanupStats.cleanupActions.push({
           noStr: noStr,
           name: group.name,
@@ -143,106 +291,73 @@ class PostProcessingDeduplicator {
     };
   }
 
-  // Select best stores to keep based on various criteria
   static selectBestStores(group, maxVisits) {
     const stores = [...group.actualAppearances];
 
-    // RULE 1: If frequency = 1, keep only 1 visit (the best one)
     if (group.baseFrequency <= 1 && maxVisits === 1) {
       const bestStore = this.selectSingleBestStore(stores);
-      Utils.log(
-        `  → RULE 1: Frequency ≤ 1, keeping best store on day ${bestStore.globalDayIndex}`,
-        "INFO"
-      );
       return [bestStore];
     }
 
-    // RULE 2: If frequency > 1, keep maxVisits with proper gap distribution
     if (maxVisits > 1) {
       const selectedStores = this.selectMultipleStoresWithGaps(
         stores,
         maxVisits
       );
-      Utils.log(
-        `  → RULE 2: Multi-visit, keeping ${selectedStores.length} stores with proper gaps`,
-        "INFO"
-      );
       return selectedStores;
     }
 
-    // RULE 3: Fractional frequency (between 0 and 1), keep 1 visit
     const bestStore = this.selectSingleBestStore(stores);
-    Utils.log(
-      `  → RULE 3: Fractional frequency, keeping best store on day ${bestStore.globalDayIndex}`,
-      "INFO"
-    );
     return [bestStore];
   }
 
-  // Select single best store based on multiple criteria
   static selectSingleBestStore(stores) {
-    // Sort by multiple criteria:
-    // 1. Earliest day (prefer earlier in month)
-    // 2. Higher priority (P1 > P2 > P3)
-    // 3. No time violations
-    // 4. Better position in day (earlier visits)
-
     return stores.sort((a, b) => {
-      // 1. Prefer earlier days
       if (a.globalDayIndex !== b.globalDayIndex) {
         return a.globalDayIndex - b.globalDayIndex;
       }
 
-      // 2. Prefer higher priority (lower number)
       const priorityA = parseInt(a.priority?.replace("P", "")) || 999;
       const priorityB = parseInt(b.priority?.replace("P", "")) || 999;
       if (priorityA !== priorityB) {
         return priorityA - priorityB;
       }
 
-      // 3. Prefer no time violations
       const violationA = a.isAfter6PM || a.timeWarning ? 1 : 0;
       const violationB = b.isAfter6PM || b.timeWarning ? 1 : 0;
       if (violationA !== violationB) {
         return violationA - violationB;
       }
 
-      // 4. Prefer earlier position in day
       return a.storeIndex - b.storeIndex;
     })[0];
   }
 
-  // Select multiple stores with proper 5-day gaps
   static selectMultipleStoresWithGaps(stores, maxVisits) {
-    // Sort by day
     const sortedStores = stores.sort(
       (a, b) => a.globalDayIndex - b.globalDayIndex
     );
 
     const selectedStores = [];
-    let lastSelectedDay = -10; // Start with large negative to allow first selection
+    let lastSelectedDay = -10;
 
     for (const store of sortedStores) {
-      // Check if this store maintains minimum 5-day gap
       if (store.globalDayIndex - lastSelectedDay >= 5) {
         selectedStores.push(store);
         lastSelectedDay = store.globalDayIndex;
 
-        // Stop if we have enough visits
         if (selectedStores.length >= maxVisits) {
           break;
         }
       }
     }
 
-    // If we couldn't get enough visits with gaps, fill remaining slots
     if (selectedStores.length < maxVisits) {
       const remainingStores = sortedStores.filter(
         (s) => !selectedStores.includes(s)
       );
       const stillNeeded = maxVisits - selectedStores.length;
 
-      // Add best remaining stores (even if gap is not ideal)
       const additionalStores = this.selectBestFromRemaining(
         remainingStores,
         stillNeeded
@@ -253,31 +368,26 @@ class PostProcessingDeduplicator {
     return selectedStores;
   }
 
-  // Select best stores from remaining options
   static selectBestFromRemaining(remainingStores, count) {
     return remainingStores
       .sort((a, b) => {
-        // Prefer higher priority
         const priorityA = parseInt(a.priority?.replace("P", "")) || 999;
         const priorityB = parseInt(b.priority?.replace("P", "")) || 999;
         if (priorityA !== priorityB) {
           return priorityA - priorityB;
         }
 
-        // Prefer no time violations
         const violationA = a.isAfter6PM || a.timeWarning ? 1 : 0;
         const violationB = b.isAfter6PM || b.timeWarning ? 1 : 0;
         if (violationA !== violationB) {
           return violationA - violationB;
         }
 
-        // Prefer earlier days
         return a.globalDayIndex - b.globalDayIndex;
       })
       .slice(0, count);
   }
 
-  // Step 4: Update working days with cleaned stores
   static updateWorkingDaysWithCleanedStores(workingDays, finalStores) {
     // Clear all existing stores
     workingDays.forEach((week) => {
@@ -304,7 +414,6 @@ class PostProcessingDeduplicator {
     workingDays.forEach((week) => {
       week.forEach((dayInfo) => {
         if (dayInfo.optimizedStores && dayInfo.optimizedStores.length > 0) {
-          // Sort by original store index to maintain route order
           dayInfo.optimizedStores.sort((a, b) => a.storeIndex - b.storeIndex);
 
           // Update order numbers
@@ -321,7 +430,6 @@ class PostProcessingDeduplicator {
     );
   }
 
-  // Step 5: Log cleanup summary
   static logCleanupSummary(cleanupResult) {
     const stats = cleanupResult.cleanupStats;
 
@@ -356,7 +464,6 @@ class PostProcessingDeduplicator {
     Utils.log("=== POST-PROCESSING CLEANUP COMPLETED ===", "INFO");
   }
 
-  // Helper: Get cleanup rule description
   static getCleanupRule(group) {
     if (group.baseFrequency <= 1) {
       return `Frequency ≤ 1: Keep only 1 visit (best quality)`;
