@@ -1,4 +1,4 @@
-// ==================== MAIN.JS - SIMPLIFIED WITH PROBLEM FIXES ====================
+// ==================== MAIN.JS - FINAL VERSION WITH P2 UTILIZATION ====================
 
 function generateEnhancedMonthlyPlan() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -53,13 +53,33 @@ function generateEnhancedMonthlyPlan() {
       cleanupActions: cleanupResult.cleanupStats.cleanupActions.length,
     };
 
+    // ✨ ADD DAY CONSOLIDATION HERE
+    ss.toast(
+      "Consolidating small days and adding P2 stores...",
+      "Processing",
+      -1
+    );
+    const consolidationResult = PostProcessingDeduplicator.consolidateSmallDays(
+      planResult.workingDays
+    );
+
+    // Add consolidation stats to result
+    planResult.statistics.dayConsolidation = {
+      daysConsolidated: consolidationResult.consolidationCount,
+      daysMerged: consolidationResult.mergedDays,
+      storesRedistributed: consolidationResult.distributedStores,
+      p2StoresAdded: consolidationResult.p2StoresAdded,
+      emptyDaysFilled: consolidationResult.emptyDaysFilled,
+      daysToppedup: consolidationResult.daysToppedup,
+    };
+
     const endTime = new Date();
     const processingTime = ((endTime - startTime) / 1000).toFixed(1);
 
     // Create output
     outputManager.createEnhancedSheet(planResult, utilConfig, stores);
 
-    // Show completion message with cleanup info
+    // Show completion message with cleanup and consolidation info
     const stats = planResult.statistics;
     let completionMessage = `✅ ENHANCED OPTIMIZATION COMPLETED in ${processingTime}s!\n\n`;
 
@@ -70,6 +90,29 @@ function generateEnhancedMonthlyPlan() {
       completionMessage += `• Duplicates removed: ${cleanup.duplicatesRemoved}\n`;
       completionMessage += `• Stores cleaned: ${cleanup.storesWithDuplicates}\n`;
       completionMessage += `• Final store count: ${cleanup.finalStoreCount}\n\n`;
+    }
+
+    // Add consolidation information
+    if (stats.dayConsolidation) {
+      completionMessage += `📦 DAY CONSOLIDATION:\n`;
+      completionMessage += `• Days consolidated: ${stats.dayConsolidation.daysConsolidated}\n`;
+      completionMessage += `• Days merged: ${
+        stats.dayConsolidation.daysMerged || 0
+      }\n`;
+      completionMessage += `• Stores redistributed: ${
+        stats.dayConsolidation.storesRedistributed || 0
+      }\n`;
+
+      if (stats.dayConsolidation.p2StoresAdded > 0) {
+        completionMessage += `• P2 stores added: ${stats.dayConsolidation.p2StoresAdded}\n`;
+        completionMessage += `• Empty days filled: ${
+          stats.dayConsolidation.emptyDaysFilled || 0
+        }\n`;
+        completionMessage += `• Days topped up: ${
+          stats.dayConsolidation.daysToppedup || 0
+        }\n`;
+      }
+      completionMessage += "\n";
     }
 
     if (stats.crossBorderOptimization) {
@@ -87,7 +130,10 @@ function generateEnhancedMonthlyPlan() {
       completionMessage += `• ${stats.coveragePercentage}% coverage\n`;
     }
 
-    Utils.log("=== ENHANCED OPTIMIZATION WITH CLEANUP COMPLETED ===", "INFO");
+    Utils.log(
+      "=== ENHANCED OPTIMIZATION WITH CLEANUP AND CONSOLIDATION COMPLETED ===",
+      "INFO"
+    );
     ss.toast(completionMessage, "✅ Success", 12);
   } catch (error) {
     Utils.log(
@@ -132,6 +178,15 @@ function generateBasicMonthlyPlan() {
 
     const startTime = new Date();
     const planResult = routeOptimizer.optimizePlan(stores);
+
+    // Apply cleanup and consolidation for basic plan too
+    const cleanupResult = PostProcessingDeduplicator.cleanupFinalRoutes(
+      planResult.workingDays
+    );
+    const consolidationResult = PostProcessingDeduplicator.consolidateSmallDays(
+      planResult.workingDays
+    );
+
     const endTime = new Date();
     const processingTime = ((endTime - startTime) / 1000).toFixed(1);
 
@@ -143,7 +198,17 @@ function generateBasicMonthlyPlan() {
     completionMessage += `• ${stats.totalStoresPlanned}/${stats.totalStoresRequired} stores planned (${stats.coveragePercentage}%)\n`;
     completionMessage += `• ${stats.workingDays} working days used\n`;
     completionMessage += `• ${stats.averageStoresPerDay} stores/day average\n`;
-    completionMessage += `• ${stats.totalDistance}km total distance`;
+    completionMessage += `• ${stats.totalDistance}km total distance\n`;
+
+    if (cleanupResult.cleanupStats.duplicatesRemoved > 0) {
+      completionMessage += `• ${cleanupResult.cleanupStats.duplicatesRemoved} duplicates removed\n`;
+    }
+    if (consolidationResult.consolidationCount > 0) {
+      completionMessage += `• ${consolidationResult.consolidationCount} small days consolidated\n`;
+    }
+    if (consolidationResult.p2StoresAdded > 0) {
+      completionMessage += `• ${consolidationResult.p2StoresAdded} P2 stores added`;
+    }
 
     Utils.log("=== BASIC OPTIMIZATION COMPLETED ===", "INFO");
     ss.toast(completionMessage, "✅ Success", 10);
@@ -184,6 +249,14 @@ function testRouteProblemFixes() {
     routeOptimizer.useEnhancedOptimization = false; // Use basic with fixes
     const planResult = routeOptimizer.optimizePlan(stores);
 
+    // Apply post-processing
+    const cleanupResult = PostProcessingDeduplicator.cleanupFinalRoutes(
+      planResult.workingDays
+    );
+    const consolidationResult = PostProcessingDeduplicator.consolidateSmallDays(
+      planResult.workingDays
+    );
+
     // Analyze problems
     const analyzer = new RouteProblemAnalyzer();
     const problems = analyzer.analyzeRouteProblems(planResult);
@@ -194,6 +267,13 @@ function testRouteProblemFixes() {
     message += `• Duplicate Visits: ${problems.duplicates}\n`;
     message += `• Gap Violations: ${problems.gaps}\n`;
     message += `• Time Violations: ${problems.timeViolations}\n\n`;
+
+    message += `Post-Processing Results:\n`;
+    message += `• Duplicates cleaned: ${cleanupResult.cleanupStats.duplicatesRemoved}\n`;
+    message += `• Days consolidated: ${consolidationResult.consolidationCount}\n`;
+    message += `• P2 stores added: ${
+      consolidationResult.p2StoresAdded || 0
+    }\n\n`;
 
     if (total === 0) {
       message += "✅ All problems fixed successfully!";
@@ -259,7 +339,7 @@ function checkUtilizationOnly() {
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
 
-  ui.createMenu("🚀 Route Optimizer - Fixed")
+  ui.createMenu("🚀 Route Optimizer - Complete")
     .addItem("📅 Generate Enhanced Monthly Plan", "generateEnhancedMonthlyPlan")
     .addItem("📅 Generate Basic Monthly Plan", "generateBasicMonthlyPlan")
     .addSeparator()
@@ -267,5 +347,5 @@ function onOpen() {
     .addItem("🔧 Test Problem Fixes", "testRouteProblemFixes")
     .addToUi();
 
-  Utils.log("Route Optimizer with fixes menu created", "INFO");
+  Utils.log("Route Optimizer with complete fixes menu created", "INFO");
 }

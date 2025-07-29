@@ -9,7 +9,7 @@ const CONFIG = {
   MAPS_API_KEY: "", // Replace with your actual API key
 
   CLUSTERING: {
-    MAX_RADIUS: 18, // Regional clustering radius (km)
+    MAX_RADIUS: 25, // Regional clustering radius (km)
     MIN_STORES_PER_DAY: 6,
     MAX_STORES_PER_DAY: 15,
     TARGET_STORES_PER_DAY: 12, // NEW: Target for balanced distribution
@@ -23,7 +23,7 @@ const CONFIG = {
 
     // NEW: Geographic optimization settings
     GEOGRAPHIC: {
-      GRID_SIZE: 0.01, // ~1.1km grid cells for spatial indexing
+      GRID_SIZE: 0.1, // ~1.1km grid cells for spatial indexing
       CLUSTERING_METHOD: "KMEANS", // KMEANS or DBSCAN
       OPTIMIZE_ROUTES: true, // Enable 2-opt optimization
       BALANCE_LOAD: true, // Enable load balancing across days
